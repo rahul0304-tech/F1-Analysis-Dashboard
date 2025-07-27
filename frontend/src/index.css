@@ -1,0 +1,60 @@
+/* frontend/src/index.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Basic Styles */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #1a1a1e; /* Dark background */
+  color: #f0f0f0; /* Light text */
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Custom F1 Colors (adjust as needed) */
+.bg-f1Black {
+  background-color: #1a1a1e;
+}
+
+.text-f1LightGray {
+  color: #f0f0f0;
+}
+
+.bg-f1Red {
+  background-color: #e10600;
+}
+
+.text-f1Red {
+  color: #e10600;
+}
+
+.border-f1Red {
+  border-color: #e10600;
+}
+
+/* Add any other global styles or utility classes you might need */
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif, 'Inter';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #15151E;
+  color: #F0F0F0;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}

@@ -1,0 +1,32 @@
+# render.yaml - Configuration for deploying the F1 Dashboard Backend on Render
+
+services:
+  # 1. The Web Service that runs the Flask API
+  - type: web
+    name: f1-dashboard-api
+    env: python
+    # All commands are run from the 'backend' directory
+    rootDir: backend
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app"
+    healthCheckPath: /api/status
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
+
+  # 2. The Cron Job that runs the data ingestor script daily
+  - type: cron
+    name: f1-data-ingestor
+    env: python
+    # All commands are run from the 'backend' directory
+    rootDir: backend
+    plan: free
+    # Schedule to run at 02:00 UTC every day. You can change this.
+    # Format is standard cron syntax.
+    schedule: "0 2 * * *"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python data_ingestor.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
