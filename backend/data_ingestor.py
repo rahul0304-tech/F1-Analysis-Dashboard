@@ -82,10 +82,25 @@ def populate_all_data():
             if drivers_response.ok:
                 drivers_data = drivers_response.json()
                 if drivers_data:
-                    # Use ReplaceOne with upsert=True to add/update driver profiles
-                    driver_updates = [ReplaceOne({'_id': d['driver_number']}, {**d, '_id': d['driver_number']}, upsert=True) for d in drivers_data]
-                    db.drivers.bulk_write(driver_updates, ordered=False)
-                    print(f"  -> Upserted {len(drivers_data)} drivers.")
+                    driver_updates = []
+                    for d in drivers_data:
+                        # Explicitly define the document to ensure headshot_url is included
+                        driver_doc = {
+                            '_id': d.get('driver_number'),
+                            'driver_number': d.get('driver_number'),
+                            'full_name': d.get('full_name'),
+                            'first_name': d.get('first_name'),
+                            'last_name': d.get('last_name'),
+                            'country_code': d.get('country_code'),
+                            'team_name': d.get('team_name'),
+                            'team_color': d.get('team_color'),
+                            'headshot_url': d.get('headshot_url') # <-- The new important field
+                        }
+                        driver_updates.append(ReplaceOne({'_id': d['driver_number']}, driver_doc, upsert=True))
+                    
+                    if driver_updates:
+                        db.drivers.bulk_write(driver_updates, ordered=False)
+                        print(f"  -> Upserted {len(drivers_data)} drivers.")
             
             # Fetch laps
             laps_response = requests.get(f"{OPENF1_API_BASE}/laps?session_key={session_key}")
