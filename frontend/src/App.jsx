@@ -42,6 +42,33 @@ const ErrorDisplay = ({ message }) => (
   </div>
 );
 
+// New DriverCard component for better visuals
+const DriverCard = ({ driver, isSelected, onToggle }) => {
+  const [imgError, setImgError] = useState(false);
+  const placeholderImage = `https://placehold.co/200x200/15151E/FFFFFF?text=${driver.first_name ? driver.first_name[0] : 'F'}${driver.last_name ? driver.last_name[0] : '1'}`;
+
+  return (
+    <button
+      onClick={() => onToggle(driver._id)}
+      className={`relative rounded-lg overflow-hidden transition-all duration-300 ease-in-out transform hover:scale-105 focus:outline-none 
+                  ${isSelected ? 'ring-4 ring-f1Red' : 'ring-2 ring-f1Gray hover:ring-f1LightGray'}`}
+    >
+      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent"></div>
+      <img
+        src={imgError || !driver.headshot_url ? placeholderImage : driver.headshot_url}
+        alt={driver.full_name}
+        className="w-full h-full object-cover"
+        onError={() => setImgError(true)}
+      />
+      <div className="absolute bottom-0 left-0 p-2 w-full">
+        <p className="text-white font-bold text-sm truncate">{driver.full_name}</p>
+        <div className="w-full h-1 mt-1 rounded-full" style={{ backgroundColor: `#${driver.team_color}` }}></div>
+      </div>
+    </button>
+  );
+};
+
+
 const App = () => {
   // --- State Management ---
   const [meetings, setMeetings] = useState([]);
@@ -279,22 +306,14 @@ const App = () => {
           {/* Driver Selector */}
           <div>
             <label className="block text-sm font-medium text-f1LightGray mb-2">Compare Drivers</label>
-            <div className="space-y-2 max-h-96 overflow-y-auto pr-2">
+            <div className="grid grid-cols-2 gap-3">
               {drivers.map(driver => (
-                <button
+                <DriverCard 
                   key={driver._id}
-                  onClick={() => handleDriverToggle(driver._id)}
-                  className={`w-full text-left p-2 rounded-lg transition-all duration-200 text-sm font-bold flex items-center
-                    ${selectedDrivers.includes(driver._id) ? 'text-white shadow-md' : 'bg-f1Black text-f1LightGray hover:bg-gray-700'}`
-                  }
-                  style={{ backgroundColor: selectedDrivers.includes(driver._id) ? `#${driver.team_color}` : undefined }}
-                >
-                  <div 
-                    className="w-2 h-5 rounded-sm mr-3"
-                    style={{ backgroundColor: `#${driver.team_color}` }}
-                  ></div>
-                  {driver.full_name}
-                </button>
+                  driver={driver}
+                  isSelected={selectedDrivers.includes(driver._id)}
+                  onToggle={handleDriverToggle}
+                />
               ))}
             </div>
           </div>
