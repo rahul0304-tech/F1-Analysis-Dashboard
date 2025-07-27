@@ -24,7 +24,7 @@ ChartJS.register(
   BarElement
 );
 
-const API_BASE_URL = 'https://f1-backend-deployment.onrender.com/';
+const API_BASE_URL = 'https://f1-backend-deployment.onrender.com/api';
 
 const Dashboard = () => {
   const [meetings, setMeetings] = useState([]);
