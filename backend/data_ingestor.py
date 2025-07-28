@@ -17,100 +17,98 @@ OPENF1_API_BASE = 'https://api.openf1.org/v1'
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 
-def clear_all_collections():
-    """Clears all data from all collections for a fresh start."""
-    print("--- Clearing all existing data from MongoDB ---")
-    collections = db.list_collection_names()
-    for collection_name in collections:
-        db[collection_name].delete_many({})
-        print(f"Cleared collection: {collection_name}")
-    print("All collections cleared successfully.")
-
-def fetch_and_store(endpoint, params, collection_name, is_driver_data=False):
-    """Generic function to fetch data from an endpoint and store it."""
+def fetch_data(endpoint, params):
+    """Generic function to fetch data from an endpoint."""
     try:
         response = requests.get(f"{OPENF1_API_BASE}/{endpoint}", params=params)
         response.raise_for_status()
-        data = response.json()
-        
-        if data:
-            if is_driver_data:
-                # For drivers, we upsert to build a master list without duplicates
-                updates = [ReplaceOne({'_id': d['driver_number']}, {**d, '_id': d['driver_number']}, upsert=True) for d in data]
-                if updates:
-                    db[collection_name].bulk_write(updates, ordered=False)
-            else:
-                # For other data, we just insert it all
-                db[collection_name].insert_many(data, ordered=False)
-            print(f"  -> Stored {len(data)} documents in '{collection_name}'")
-        else:
-            print(f"  -> No data found for '{collection_name}'")
-
+        return response.json()
     except requests.exceptions.RequestException as e:
         print(f"  -> Could not fetch {endpoint} for params {params}: {e}")
-    except Exception as e:
-        print(f"  -> An error occurred while storing data for {collection_name}: {e}")
-
+        return None
+    except json.JSONDecodeError:
+        print(f"  -> Failed to decode JSON from {endpoint} for params {params}")
+        return None
 
 def populate_all_data():
     """
-    Main function to clear and re-ingest a comprehensive dataset from the OpenF1 API.
+    Main function to re-ingest a comprehensive dataset from the OpenF1 API.
+    This version is more robust and clears data on a per-session basis.
     """
     try:
-        clear_all_collections()
-
         cutoff_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         cutoff_date_str = cutoff_utc.isoformat(timespec='seconds')
-        print(f"\n--- Fetching new data for sessions completed before: {cutoff_date_str}Z ---")
+        print(f"--- Starting comprehensive data ingestion ---")
+        print(f"Fetching data for all sessions completed before: {cutoff_date_str}Z")
 
-        # 1. Fetch Meetings and Sessions first to get session_keys
-        fetch_and_store('meetings', {}, 'meetings')
+        # 1. Fetch all meetings and upsert them into the meetings collection
+        print("\n--- Step 1: Fetching and storing all meetings ---")
+        meetings_data = fetch_data('meetings', {})
+        if not meetings_data:
+            raise Exception("Failed to fetch meetings. The API might be down. Aborting.")
         
+        meeting_updates = [ReplaceOne({'_id': m['meeting_key']}, {**m, '_id': m['meeting_key']}, upsert=True) for m in meetings_data]
+        if meeting_updates:
+            db.meetings.bulk_write(meeting_updates)
+            print(f"Upserted {len(meeting_updates)} meetings.")
+
+        # 2. Fetch all sessions and filter for completed ones
+        print("\n--- Step 2: Identifying completed sessions ---")
         all_meetings = list(db.meetings.find({}, {'_id': 1}))
-        sessions_to_insert = []
+        completed_sessions = []
         for meeting in all_meetings:
-            try:
-                response = requests.get(f"{OPENF1_API_BASE}/sessions", params={'meeting_key': meeting['_id']})
-                response.raise_for_status()
-                for session in response.json():
+            sessions_data = fetch_data('sessions', {'meeting_key': meeting['_id']})
+            if sessions_data:
+                for session in sessions_data:
                     if session.get('date_end') and session.get('date_end') < cutoff_date_str:
-                        sessions_to_insert.append({**session, '_id': session['session_key']})
-            except requests.exceptions.RequestException as e:
-                print(f"Could not fetch sessions for meeting {meeting['_id']}: {e}")
+                        completed_sessions.append({**session, '_id': session['session_key']})
         
-        if sessions_to_insert:
-            db.sessions.insert_many(sessions_to_insert, ordered=False)
-            print(f"\nStored {len(sessions_to_insert)} completed sessions.")
+        if not completed_sessions:
+            print("No new completed sessions found to process. Exiting.")
+            return
+        
+        # Upsert the session documents
+        session_updates = [ReplaceOne({'_id': s['_id']}, s, upsert=True) for s in completed_sessions]
+        db.sessions.bulk_write(session_updates)
+        print(f"Found and stored {len(completed_sessions)} completed sessions.")
 
-        # 2. Iterate through each completed session and fetch all related data
-        all_sessions = list(db.sessions.find({}, {'_id': 1, 'session_name': 1}))
-        print(f"\n--- Fetching detailed data for {len(all_sessions)} sessions ---")
-
-        # Define endpoints to fetch for each session
+        # 3. For each completed session, clear its related data and re-ingest
+        print(f"\n--- Step 3: Fetching detailed data for {len(completed_sessions)} sessions ---")
+        
         session_endpoints = [
             'drivers', 'intervals', 'laps', 'pit', 'position', 
             'race_control', 'session_result', 'stints', 'weather'
         ]
-        
-        # NOTE: 'car_data' and 'location' are excluded by default as they are very large datasets.
-        # You can add them to the list above if you need full telemetry.
-        # session_endpoints.extend(['car_data', 'location'])
 
-        for session in all_sessions:
+        for session in completed_sessions:
             session_key = session['_id']
-            print(f"\nProcessing session: {session['session_name']} (Key: {session_key})")
+            print(f"\nProcessing session: {session.get('session_name', 'N/A')} (Key: {session_key})")
             
+            # Clear existing data for this session to avoid duplicates
             for endpoint in session_endpoints:
-                time.sleep(0.2) # Be kind to the API
-                collection_name = endpoint.replace('_', '_') # e.g., session_result -> session_results
-                if collection_name == 'pit': collection_name = 'pit_stops' # Adjust for schema name
-                
-                fetch_and_store(
-                    endpoint=endpoint,
-                    params={'session_key': session_key},
-                    collection_name=collection_name,
-                    is_driver_data=(endpoint == 'drivers')
-                )
+                collection_name = endpoint
+                if endpoint == 'pit': collection_name = 'pit_stops'
+                if endpoint == 'session_result': collection_name = 'session_results'
+                if endpoint != 'drivers': # Don't clear master driver list
+                    db[collection_name].delete_many({'session_key': session_key})
+
+            # Fetch new data for this session
+            for endpoint in session_endpoints:
+                time.sleep(0.1) # Be kind to the API
+                collection_name = endpoint
+                if endpoint == 'pit': collection_name = 'pit_stops'
+                if endpoint == 'session_result': collection_name = 'session_results'
+
+                data = fetch_data(endpoint, {'session_key': session_key})
+                if data:
+                    if endpoint == 'drivers':
+                        driver_updates = [ReplaceOne({'_id': d['driver_number']}, {**d, '_id': d['driver_number']}, upsert=True) for d in data]
+                        if driver_updates:
+                            db.drivers.bulk_write(driver_updates, ordered=False)
+                            print(f"  -> Upserted {len(driver_updates)} drivers.")
+                    else:
+                        db[collection_name].insert_many(data, ordered=False)
+                        print(f"  -> Stored {len(data)} documents in '{collection_name}'")
 
         print("\nData population complete!")
 
