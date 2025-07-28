@@ -97,7 +97,11 @@ def get_laps():
     try:
         session_key = int(session_key_str)
         pipeline = [
-            {'$match': {'session_key': session_key}},
+            # THE FIX: Only match laps that have a non-null lap_duration
+            {'$match': {
+                'session_key': session_key,
+                'lap_duration': {'$ne': None}
+            }},
             {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
             {'$unwind': '$driver_info'},
             {'$addFields': {'full_name': '$driver_info.full_name', 'team_color': '$driver_info.team_color'}},
