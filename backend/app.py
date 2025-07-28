@@ -83,32 +83,34 @@ def get_session_details(session_key):
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
     try:
-        # THE FIX: This new pipeline is much more accurate for final positions.
-        # It finds each driver's last lap and uses their position on that lap.
+        # THE FIX: A much more accurate pipeline for final race positions.
         pipeline = [
             {'$match': {'session_key': session_key}},
+            # Find the last lap for each driver
             {'$sort': {'lap_number': -1}},
             {'$group': {
                 '_id': '$driver_number',
-                'final_position': {'$first': '$position'},
+                'final_position_on_lap': {'$first': '$position'},
                 'laps_completed': {'$first': '$lap_number'}
             }},
-            {'$sort': {'final_position': 1}},
+            # Sort drivers by laps completed (desc) and then position on their last lap (asc)
+            {'$sort': {'laps_completed': -1, 'final_position_on_lap': 1}},
+            # Join with driver info
             {'$lookup': {
-                'from': 'drivers',
-                'localField': '_id',
-                'foreignField': '_id',
-                'as': 'driver_info'
+                'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'
             }},
             {'$unwind': '$driver_info'},
+            # Add a final, accurate position rank
+            {'$setWindowFields': {
+                'partitionBy': None,
+                'sortBy': {'laps_completed': -1, 'final_position_on_lap': 1},
+                'output': {'position': {'$rank': {}}}
+            }},
+            # Project the final fields
             {'$project': {
-                '_id': 0,
-                'position': '$final_position',
-                'driver_number': '$_id',
-                'full_name': '$driver_info.full_name',
-                'team_name': '$driver_info.team_name',
-                'team_color': '$driver_info.team_color',
-                'laps_completed': '$laps_completed'
+                '_id': 0, 'position': 1, 'driver_number': '$_id',
+                'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name',
+                'team_color': '$driver_info.team_color', 'laps_completed': '$laps_completed'
             }}
         ]
         positions = list(db.laps.aggregate(pipeline))
@@ -124,28 +126,39 @@ def get_laps():
         sort_order = request.args.get('sort')
         
         match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
-        sort_stage = {'lap_number': 1}
-        limit_stage = None
-
+        
         if sort_order == 'fastest':
-            sort_stage = {'lap_duration': 1}
-            limit_stage = {'$limit': 10}
-
-        pipeline = [
-            {'$match': match_stage},
-            {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
-            {'$unwind': '$driver_info'},
-            # Added team_name to this stage
-            {'$addFields': {
-                'full_name': '$driver_info.full_name',
-                'team_color': '$driver_info.team_color',
-                'team_name': '$driver_info.team_name'
-            }},
-            {'$project': {'driver_info': 0}},
-            {'$sort': sort_stage}
-        ]
-        if limit_stage:
-            pipeline.append(limit_stage)
+            # THE FIX: This new pipeline gets the single fastest lap for each of the top 10 drivers.
+            pipeline = [
+                {'$match': match_stage},
+                {'$sort': {'lap_duration': 1}},
+                {'$group': {
+                    '_id': '$driver_number',
+                    'fastest_lap_duration': {'$first': '$lap_duration'},
+                    'lap_number': {'$first': '$lap_number'}
+                }},
+                {'$sort': {'fastest_lap_duration': 1}},
+                {'$limit': 10},
+                {'$lookup': {
+                    'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'
+                }},
+                {'$unwind': '$driver_info'},
+                {'$project': {
+                    '_id': 0, 'driver_number': '$_id', 'full_name': '$driver_info.full_name',
+                    'team_name': '$driver_info.team_name', 'team_color': '$driver_info.team_color',
+                    'lap_duration': '$fastest_lap_duration', 'lap_number': '$lap_number'
+                }}
+            ]
+        else:
+            # Default behavior to get all laps
+            pipeline = [
+                {'$match': match_stage},
+                {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
+                {'$unwind': '$driver_info'},
+                {'$addFields': {'full_name': '$driver_info.full_name', 'team_color': '$driver_info.team_color', 'team_name': '$driver_info.team_name'}},
+                {'$project': {'driver_info': 0}},
+                {'$sort': {'lap_number': 1}}
+            ]
         
         laps = list(db.laps.aggregate(pipeline))
         return jsonify(parse_json(laps))
