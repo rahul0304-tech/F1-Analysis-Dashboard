@@ -83,29 +83,33 @@ def get_session_details(session_key):
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
     try:
-        # THE FIX: A much more accurate pipeline for final race positions.
+        # THE FIX: This pipeline is much more robust for calculating final positions.
         pipeline = [
-            {'$match': {'session_key': session_key}},
-            # Find the last lap for each driver
+            # Match only laps with a valid position recorded
+            {'$match': {
+                'session_key': session_key,
+                'position': {'$ne': None, '$gt': 0}
+            }},
+            # Find the last valid lap for each driver
             {'$sort': {'lap_number': -1}},
             {'$group': {
                 '_id': '$driver_number',
                 'final_position_on_lap': {'$first': '$position'},
                 'laps_completed': {'$first': '$lap_number'}
             }},
-            # Sort drivers by laps completed (desc) and then position on their last lap (asc)
+            # Sort by laps completed (most first), then by position on their last lap (lowest first)
             {'$sort': {'laps_completed': -1, 'final_position_on_lap': 1}},
-            # Join with driver info
-            {'$lookup': {
-                'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'
-            }},
-            {'$unwind': '$driver_info'},
             # Add a final, accurate position rank
             {'$setWindowFields': {
                 'partitionBy': None,
                 'sortBy': {'laps_completed': -1, 'final_position_on_lap': 1},
                 'output': {'position': {'$rank': {}}}
             }},
+            # Join with driver info
+            {'$lookup': {
+                'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'
+            }},
+            {'$unwind': '$driver_info'},
             # Project the final fields
             {'$project': {
                 '_id': 0, 'position': 1, 'driver_number': '$_id',
@@ -128,7 +132,7 @@ def get_laps():
         match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
         
         if sort_order == 'fastest':
-            # THE FIX: This new pipeline gets the single fastest lap for each of the top 10 drivers.
+            # THE FIX: This pipeline now gets the single fastest lap for each of the top 10 drivers.
             pipeline = [
                 {'$match': match_stage},
                 {'$sort': {'lap_duration': 1}},
