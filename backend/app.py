@@ -1,216 +1,98 @@
-# backend/app.py
+# backend/data_ingestor.py
 import os
-from flask import Flask, jsonify, request
-from flask_cors import CORS
-from pymongo import MongoClient
-from bson import json_util
-import json
-import logging
+import requests
+import time
+from datetime import datetime, timezone
+from pymongo import MongoClient, ReplaceOne
 
-# --- Setup ---
-app = Flask(__name__)
-# Using the simplest, most permissive CORS setup for maximum compatibility.
-CORS(app) 
-logging.basicConfig(level=logging.INFO)
-
-
-# --- Database Connection ---
+# --- Configuration ---
 MONGO_URI = os.environ.get('MONGO_URI')
 if not MONGO_URI:
-    logging.error("FATAL: MONGO_URI environment variable not set!")
     raise Exception("MONGO_URI environment variable not set!")
 
 DB_NAME = 'f1_data'
+OPENF1_API_BASE = 'https://api.openf1.org/v1'
+
+# --- Database Connection ---
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 
-def parse_json(data):
-    """Helper function to convert MongoDB BSON to JSON."""
-    return json.loads(json_util.dumps(data))
-
-# --- API Endpoints with Robust Error Handling ---
-
-@app.route('/api/status')
-def get_status():
-    """API endpoint to check if the service is running."""
-    return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
-
-@app.route('/api/meetings')
-def get_all_meetings():
+def populate_all_data():
+    """
+    Main function to clear and re-ingest all historical F1 data.
+    """
     try:
-        meetings = list(db.meetings.find().sort([('year', -1), ('date_start', -1)]))
-        return jsonify(parse_json(meetings))
-    except Exception as e:
-        logging.error(f"Error in /api/meetings: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+        print("--- Clearing existing data from MongoDB ---")
+        db.meetings.delete_many({})
+        db.sessions.delete_many({})
+        db.laps.delete_many({})
+        db.drivers.delete_many({})
+        print("Existing data cleared successfully.")
 
-@app.route('/api/meetings/<int:meeting_key>')
-def get_meeting_details(meeting_key):
-    try:
-        meeting = db.meetings.find_one({'_id': meeting_key})
-        if not meeting:
-            return jsonify({"error": "Meeting not found"}), 404
-        return jsonify(parse_json(meeting))
-    except Exception as e:
-        logging.error(f"Error in /api/meetings/{meeting_key}: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+        cutoff_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff_date_str = cutoff_utc.isoformat(timespec='seconds')
+        print(f"\n--- Fetching new data for sessions completed before: {cutoff_date_str}Z ---")
 
-@app.route('/api/meetings/<int:meeting_key>/sessions')
-def get_sessions_for_meeting(meeting_key):
-    try:
-        session_type_filter = request.args.get('type')
-        query = {'meeting_key': meeting_key}
-        if session_type_filter:
-            query['session_name'] = {'$regex': f'^{session_type_filter}$', '$options': 'i'}
+        print("--- Fetching all meetings ---")
+        meetings_response = requests.get(f"{OPENF1_API_BASE}/meetings")
+        meetings_response.raise_for_status()
+        meetings_data = meetings_response.json()
         
-        sessions = list(db.sessions.find(query).sort('date_start', -1))
-        return jsonify(parse_json(sessions))
-    except Exception as e:
-        logging.error(f"Error in /api/meetings/{meeting_key}/sessions: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+        if meetings_data:
+            meetings_to_insert = [{**m, '_id': m['meeting_key']} for m in meetings_data]
+            db.meetings.insert_many(meetings_to_insert, ordered=False)
+            print(f"Stored {len(meetings_to_insert)} meetings.")
 
-@app.route('/api/sessions/<int:session_key>')
-def get_session_details(session_key):
-    try:
-        session = db.sessions.find_one({'_id': session_key})
-        if not session:
-            return jsonify({"error": "Session not found"}), 404
-        return jsonify(parse_json(session))
-    except Exception as e:
-        logging.error(f"Error in /api/sessions/{session_key}: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+        print("\n--- Fetching and filtering sessions ---")
+        all_meetings = list(db.meetings.find({}, {'_id': 1, 'meeting_name': 1}))
+        sessions_to_insert = []
+        for meeting in all_meetings:
+            time.sleep(0.1)
+            try:
+                sessions_response = requests.get(f"{OPENF1_API_BASE}/sessions?meeting_key={meeting['_id']}")
+                sessions_response.raise_for_status()
+                for session in sessions_response.json():
+                    if session.get('date_end') and session.get('date_end') < cutoff_date_str:
+                        sessions_to_insert.append({**session, '_id': session['session_key']})
+            except requests.exceptions.RequestException as e:
+                print(f"Could not fetch sessions for meeting {meeting['_id']}: {e}")
+        
+        if sessions_to_insert:
+            db.sessions.insert_many(sessions_to_insert, ordered=False)
+            print(f"Stored {len(sessions_to_insert)} completed sessions.")
 
-@app.route('/api/sessions/<int:session_key>/positions')
-def get_session_positions(session_key):
-    try:
-        # THE FIX: A much more accurate pipeline for final race positions.
-        pipeline = [
-            # 1. Match all laps for the session that have a valid position recorded
-            {'$match': {
-                'session_key': session_key,
-                'position': {'$ne': None, '$gt': 0}
-            }},
-            # 2. Sort by lap number to easily find the last lap for each driver
-            {'$sort': {'lap_number': -1}},
-            # 3. Group by driver to get their last lap's data
-            {'$group': {
-                '_id': '$driver_number',
-                'laps_completed': {'$first': '$lap_number'},
-                'final_position_on_lap': {'$first': '$position'}
-            }},
-            # 4. Sort by who completed the most laps, then by their final position
-            {'$sort': {
-                'laps_completed': -1,
-                'final_position_on_lap': 1
-            }},
-            # 5. Join with driver details
-            {'$lookup': {
-                'from': 'drivers',
-                'localField': '_id',
-                'foreignField': '_id',
-                'as': 'driver_info'
-            }},
-            {'$unwind': '$driver_info'},
-            # 6. Project the necessary fields, the rank will be added in Python
-            {'$project': {
-                '_id': 0,
-                'driver_number': '$_id',
-                'full_name': '$driver_info.full_name',
-                'team_name': '$driver_info.team_name',
-                'team_color': '$driver_info.team_color',
-                'laps_completed': '$laps_completed'
-            }}
-        ]
-        
-        results = list(db.laps.aggregate(pipeline))
-        
-        # 7. Add the position number in Python for 100% reliability
-        final_positions = []
-        for i, driver_data in enumerate(results):
-            driver_data['position'] = i + 1
-            final_positions.append(driver_data)
+        print("\n--- Fetching laps and drivers for stored sessions ---")
+        all_sessions = list(db.sessions.find({}, {'_id': 1, 'session_name': 1}))
+        for session in all_sessions:
+            session_key = session['_id']
+            print(f"Processing session: {session['session_name']} (Key: {session_key})")
+            time.sleep(0.2)
             
-        return jsonify(parse_json(final_positions))
-        
-    except Exception as e:
-        logging.error(f"Error in /api/sessions/{session_key}/positions: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+            drivers_response = requests.get(f"{OPENF1_API_BASE}/drivers?session_key={session_key}")
+            if drivers_response.ok:
+                drivers_data = drivers_response.json()
+                if drivers_data:
+                    driver_updates = [ReplaceOne({'_id': d['driver_number']}, {**d, '_id': d['driver_number']}, upsert=True) for d in drivers_data]
+                    db.drivers.bulk_write(driver_updates, ordered=False)
+                    print(f"  -> Upserted {len(drivers_data)} drivers.")
+            
+            laps_response = requests.get(f"{OPENF1_API_BASE}/laps?session_key={session_key}")
+            if laps_response.ok:
+                laps_data = laps_response.json()
+                if laps_data:
+                    # THE FIX: Ensure all relevant fields, especially 'position' and 'date', are included.
+                    # We are now inserting the full lap document from the API.
+                    db.laps.insert_many(laps_data, ordered=False)
+                    print(f"  -> Inserted {len(laps_data)} laps with full data.")
 
+        print("\nData population complete!")
 
-@app.route('/api/laps')
-def get_laps():
-    try:
-        session_key = int(request.args.get('session_key'))
-        sort_order = request.args.get('sort')
-        
-        match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
-        
-        if sort_order == 'fastest':
-            # THE FIX: This pipeline now gets the single fastest lap for each of the top 10 drivers.
-            pipeline = [
-                {'$match': match_stage},
-                {'$sort': {'lap_duration': 1}},
-                {'$group': {
-                    '_id': '$driver_number',
-                    'fastest_lap_duration': {'$first': '$lap_duration'},
-                    'lap_number': {'$first': '$lap_number'}
-                }},
-                {'$sort': {'fastest_lap_duration': 1}},
-                {'$limit': 10},
-                {'$lookup': {
-                    'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'
-                }},
-                {'$unwind': '$driver_info'},
-                {'$project': {
-                    '_id': 0, 'driver_number': '$_id', 'full_name': '$driver_info.full_name',
-                    'team_name': '$driver_info.team_name', 'team_color': '$driver_info.team_color',
-                    'lap_duration': '$fastest_lap_duration', 'lap_number': '$lap_number'
-                }}
-            ]
-        else:
-            # Default behavior to get all laps
-            pipeline = [
-                {'$match': match_stage},
-                {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
-                {'$unwind': '$driver_info'},
-                {'$addFields': {'full_name': '$driver_info.full_name', 'team_color': '$driver_info.team_color', 'team_name': '$driver_info.team_name'}},
-                {'$project': {'driver_info': 0}},
-                {'$sort': {'lap_number': 1}}
-            ]
-        
-        laps = list(db.laps.aggregate(pipeline))
-        return jsonify(parse_json(laps))
-    except (ValueError, TypeError):
-        return jsonify({"error": "session_key must be a valid integer"}), 400
     except Exception as e:
-        logging.error(f"Error in /api/laps: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
+        print(f"\nAn unexpected error occurred during data ingestion: {e}")
+    finally:
+        client.close()
+        print("MongoDB connection closed.")
 
-@app.route('/api/drivers')
-def get_drivers():
-    try:
-        session_key = int(request.args.get('session_key'))
-        distinct_driver_nums = db.laps.distinct('driver_number', {'session_key': session_key})
-        drivers = list(db.drivers.find({'_id': {'$in': distinct_driver_nums}}).sort('team_name', 1))
-        return jsonify(parse_json(drivers))
-    except (ValueError, TypeError):
-        return jsonify({"error": "session_key must be a valid integer"}), 400
-    except Exception as e:
-        logging.error(f"Error in /api/drivers: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
-
-# --- LEGACY ENDPOINT (for original dashboard) ---
-@app.route('/api/sessions')
-def get_sessions_by_query():
-    try:
-        meeting_key = int(request.args.get('meeting_key'))
-        sessions = list(db.sessions.find({'meeting_key': meeting_key}).sort('date_start', -1))
-        return jsonify(parse_json(sessions))
-    except (ValueError, TypeError):
-        return jsonify({"error": "meeting_key must be a valid integer"}), 400
-    except Exception as e:
-        logging.error(f"Error in /api/sessions?meeting_key=...: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    populate_all_data()
