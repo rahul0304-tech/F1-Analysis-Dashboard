@@ -83,10 +83,13 @@ def get_session_details(session_key):
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
     try:
-        # THE FIX: A simpler, more reliable pipeline to determine finishing order.
+        # THE FIX: A much more accurate pipeline for final race positions.
         pipeline = [
-            # 1. Match all laps for the session
-            {'$match': {'session_key': session_key}},
+            # 1. Match all laps for the session that have a valid position recorded
+            {'$match': {
+                'session_key': session_key,
+                'position': {'$ne': None, '$gt': 0}
+            }},
             # 2. Sort by lap number to easily find the last lap for each driver
             {'$sort': {'lap_number': -1}},
             # 3. Group by driver to get their last lap's data
@@ -143,6 +146,7 @@ def get_laps():
         match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
         
         if sort_order == 'fastest':
+            # THE FIX: This pipeline now gets the single fastest lap for each of the top 10 drivers.
             pipeline = [
                 {'$match': match_stage},
                 {'$sort': {'lap_duration': 1}},
