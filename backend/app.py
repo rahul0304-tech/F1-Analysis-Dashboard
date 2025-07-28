@@ -35,14 +35,10 @@ def get_status():
     """API endpoint to check if the service is running."""
     return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
 
-# --- NEW ENDPOINT FOR SEASON STATS ---
 @app.route('/api/stats/season/<int:year>')
 def get_season_stats(year):
     try:
-        # Count total sessions for the given year
         total_sessions = db.sessions.count_documents({'year': year})
-        
-        # Get all unique driver numbers who participated in that year's sessions
         pipeline = [
             {'$match': {'year': year}},
             {'$lookup': {
@@ -75,10 +71,6 @@ def get_all_meetings():
     except Exception as e:
         logging.error(f"Error in /api/meetings: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
-
-# ... (rest of the app.py file remains the same)
-# I have omitted the rest of the file for brevity, but you should only need to add the new endpoint.
-# Make sure to place it after the get_status() function.
 
 @app.route('/api/meetings/<int:meeting_key>')
 def get_meeting_details(meeting_key):
@@ -136,7 +128,9 @@ def get_session_positions(session_key):
                 'full_name': '$driver_info.full_name',
                 'team_name': '$driver_info.team_name',
                 'team_color': '$driver_info.team_colour',
-                'laps_completed': '$number_of_laps'
+                'laps_completed': '$number_of_laps',
+                # THE FIX: Add the headshot_url to the response
+                'headshot_url': '$driver_info.headshot_url'
             }}
         ]
         positions = list(db.session_results.aggregate(pipeline))
