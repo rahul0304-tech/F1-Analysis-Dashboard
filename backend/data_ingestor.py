@@ -17,41 +17,62 @@ OPENF1_API_BASE = 'https://api.openf1.org/v1'
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 
+def clear_all_collections():
+    """Clears all data from all collections for a fresh start."""
+    print("--- Clearing all existing data from MongoDB ---")
+    collections = db.list_collection_names()
+    for collection_name in collections:
+        db[collection_name].delete_many({})
+        print(f"Cleared collection: {collection_name}")
+    print("All collections cleared successfully.")
+
+def fetch_and_store(endpoint, params, collection_name, is_driver_data=False):
+    """Generic function to fetch data from an endpoint and store it."""
+    try:
+        response = requests.get(f"{OPENF1_API_BASE}/{endpoint}", params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data:
+            if is_driver_data:
+                # For drivers, we upsert to build a master list without duplicates
+                updates = [ReplaceOne({'_id': d['driver_number']}, {**d, '_id': d['driver_number']}, upsert=True) for d in data]
+                if updates:
+                    db[collection_name].bulk_write(updates, ordered=False)
+            else:
+                # For other data, we just insert it all
+                db[collection_name].insert_many(data, ordered=False)
+            print(f"  -> Stored {len(data)} documents in '{collection_name}'")
+        else:
+            print(f"  -> No data found for '{collection_name}'")
+
+    except requests.exceptions.RequestException as e:
+        print(f"  -> Could not fetch {endpoint} for params {params}: {e}")
+    except Exception as e:
+        print(f"  -> An error occurred while storing data for {collection_name}: {e}")
+
+
 def populate_all_data():
     """
-    Main function to clear and re-ingest all historical F1 data.
+    Main function to clear and re-ingest a comprehensive dataset from the OpenF1 API.
     """
     try:
-        print("--- Clearing existing data from MongoDB ---")
-        db.meetings.delete_many({})
-        db.sessions.delete_many({})
-        db.laps.delete_many({})
-        db.drivers.delete_many({})
-        print("Existing data cleared successfully.")
+        clear_all_collections()
 
         cutoff_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         cutoff_date_str = cutoff_utc.isoformat(timespec='seconds')
         print(f"\n--- Fetching new data for sessions completed before: {cutoff_date_str}Z ---")
 
-        print("--- Fetching all meetings ---")
-        meetings_response = requests.get(f"{OPENF1_API_BASE}/meetings")
-        meetings_response.raise_for_status()
-        meetings_data = meetings_response.json()
+        # 1. Fetch Meetings and Sessions first to get session_keys
+        fetch_and_store('meetings', {}, 'meetings')
         
-        if meetings_data:
-            meetings_to_insert = [{**m, '_id': m['meeting_key']} for m in meetings_data]
-            db.meetings.insert_many(meetings_to_insert, ordered=False)
-            print(f"Stored {len(meetings_to_insert)} meetings.")
-
-        print("\n--- Fetching and filtering sessions ---")
-        all_meetings = list(db.meetings.find({}, {'_id': 1, 'meeting_name': 1}))
+        all_meetings = list(db.meetings.find({}, {'_id': 1}))
         sessions_to_insert = []
         for meeting in all_meetings:
-            time.sleep(0.1)
             try:
-                sessions_response = requests.get(f"{OPENF1_API_BASE}/sessions?meeting_key={meeting['_id']}")
-                sessions_response.raise_for_status()
-                for session in sessions_response.json():
+                response = requests.get(f"{OPENF1_API_BASE}/sessions", params={'meeting_key': meeting['_id']})
+                response.raise_for_status()
+                for session in response.json():
                     if session.get('date_end') and session.get('date_end') < cutoff_date_str:
                         sessions_to_insert.append({**session, '_id': session['session_key']})
             except requests.exceptions.RequestException as e:
@@ -59,36 +80,42 @@ def populate_all_data():
         
         if sessions_to_insert:
             db.sessions.insert_many(sessions_to_insert, ordered=False)
-            print(f"Stored {len(sessions_to_insert)} completed sessions.")
+            print(f"\nStored {len(sessions_to_insert)} completed sessions.")
 
-        print("\n--- Fetching laps and drivers for stored sessions ---")
+        # 2. Iterate through each completed session and fetch all related data
         all_sessions = list(db.sessions.find({}, {'_id': 1, 'session_name': 1}))
+        print(f"\n--- Fetching detailed data for {len(all_sessions)} sessions ---")
+
+        # Define endpoints to fetch for each session
+        session_endpoints = [
+            'drivers', 'intervals', 'laps', 'pit', 'position', 
+            'race_control', 'session_result', 'stints', 'weather'
+        ]
+        
+        # NOTE: 'car_data' and 'location' are excluded by default as they are very large datasets.
+        # You can add them to the list above if you need full telemetry.
+        # session_endpoints.extend(['car_data', 'location'])
+
         for session in all_sessions:
             session_key = session['_id']
-            print(f"Processing session: {session['session_name']} (Key: {session_key})")
-            time.sleep(0.2)
+            print(f"\nProcessing session: {session['session_name']} (Key: {session_key})")
             
-            drivers_response = requests.get(f"{OPENF1_API_BASE}/drivers?session_key={session_key}")
-            if drivers_response.ok:
-                drivers_data = drivers_response.json()
-                if drivers_data:
-                    driver_updates = [ReplaceOne({'_id': d['driver_number']}, {**d, '_id': d['driver_number']}, upsert=True) for d in drivers_data]
-                    db.drivers.bulk_write(driver_updates, ordered=False)
-                    print(f"  -> Upserted {len(drivers_data)} drivers.")
-            
-            laps_response = requests.get(f"{OPENF1_API_BASE}/laps?session_key={session_key}")
-            if laps_response.ok:
-                laps_data = laps_response.json()
-                if laps_data:
-                    # THE FIX: Ensure all relevant fields, especially 'position' and 'date', are included.
-                    # We are now inserting the full lap document from the API.
-                    db.laps.insert_many(laps_data, ordered=False)
-                    print(f"  -> Inserted {len(laps_data)} laps with full data.")
+            for endpoint in session_endpoints:
+                time.sleep(0.2) # Be kind to the API
+                collection_name = endpoint.replace('_', '_') # e.g., session_result -> session_results
+                if collection_name == 'pit': collection_name = 'pit_stops' # Adjust for schema name
+                
+                fetch_and_store(
+                    endpoint=endpoint,
+                    params={'session_key': session_key},
+                    collection_name=collection_name,
+                    is_driver_data=(endpoint == 'drivers')
+                )
 
         print("\nData population complete!")
 
     except Exception as e:
-        print(f"\nAn unexpected error occurred during data ingestion: {e}")
+        print(f"\nAn unexpected high-level error occurred: {e}")
     finally:
         client.close()
         print("MongoDB connection closed.")
