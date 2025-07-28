@@ -21,7 +21,7 @@ db = client[DB_NAME]
 def populate_all_data():
     """
     Main function to clear and re-ingest all historical F1 data from the
-    OpenF1 API up to yesterday, storing it in MongoDB.
+    OpenF1 API for sessions completed before the start of the current day (UTC).
     """
     try:
         # 1. Clear existing collections for a fresh start
@@ -32,10 +32,11 @@ def populate_all_data():
         db.drivers.delete_many({})
         print("Existing data cleared successfully.")
 
-        # 2. Calculate the cutoff date (yesterday in UTC)
-        yesterday_utc = datetime.now(timezone.utc) - timedelta(days=1)
-        yesterday_date_str = yesterday_utc.isoformat(timespec='seconds')
-        print(f"\n--- Fetching new data for sessions completed before: {yesterday_date_str}Z ---")
+        # 2. THE FIX: Calculate the cutoff time as midnight UTC of the current day.
+        # This is more reliable than subtracting 24 hours.
+        cutoff_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff_date_str = cutoff_utc.isoformat(timespec='seconds')
+        print(f"\n--- Fetching new data for sessions completed before: {cutoff_date_str}Z ---")
 
         # 3. Fetch and store ALL meetings
         print("--- Fetching all meetings ---")
@@ -44,12 +45,11 @@ def populate_all_data():
         meetings_data = meetings_response.json()
         
         if meetings_data:
-            # Prepare data for MongoDB, using meeting_key as the unique _id
             meetings_to_insert = [{**m, '_id': m['meeting_key']} for m in meetings_data]
             db.meetings.insert_many(meetings_to_insert, ordered=False)
             print(f"Stored {len(meetings_to_insert)} meetings in total.")
 
-        # 4. Fetch and filter sessions
+        # 4. Fetch and filter sessions using the new cutoff time
         print("\n--- Fetching and filtering sessions ---")
         all_meetings = list(db.meetings.find({}, {'_id': 1, 'meeting_name': 1}))
         sessions_to_insert = []
@@ -59,8 +59,7 @@ def populate_all_data():
                 sessions_response = requests.get(f"{OPENF1_API_BASE}/sessions?meeting_key={meeting['_id']}")
                 sessions_response.raise_for_status()
                 for session in sessions_response.json():
-                    if session.get('date_end') and session.get('date_end') < yesterday_date_str:
-                        # Prepare data for MongoDB, using session_key as the unique _id
+                    if session.get('date_end') and session.get('date_end') < cutoff_date_str:
                         sessions_to_insert.append({**session, '_id': session['session_key']})
             except requests.exceptions.RequestException as e:
                 print(f"Could not fetch sessions for meeting {meeting['_id']}: {e}")
@@ -84,7 +83,6 @@ def populate_all_data():
                 if drivers_data:
                     driver_updates = []
                     for d in drivers_data:
-                        # Explicitly define the document to ensure headshot_url is included
                         driver_doc = {
                             '_id': d.get('driver_number'),
                             'driver_number': d.get('driver_number'),
@@ -94,7 +92,7 @@ def populate_all_data():
                             'country_code': d.get('country_code'),
                             'team_name': d.get('team_name'),
                             'team_color': d.get('team_color'),
-                            'headshot_url': d.get('headshot_url') # <-- The new important field
+                            'headshot_url': d.get('headshot_url')
                         }
                         driver_updates.append(ReplaceOne({'_id': d['driver_number']}, driver_doc, upsert=True))
                     
