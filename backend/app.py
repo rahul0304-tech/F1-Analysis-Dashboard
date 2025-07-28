@@ -38,21 +38,6 @@ def get_all_meetings():
     meetings = list(db.meetings.find().sort([('year', -1), ('date_start', -1)]))
     return jsonify(parse_json(meetings))
 
-@app.route('/api/sessions')
-def get_sessions_by_key():
-    """
-    Legacy endpoint to get sessions for a given meeting_key via query param.
-    Kept for backward compatibility with the current dashboard.
-    """
-    try:
-        meeting_key = int(request.args.get('meeting_key'))
-    except (TypeError, ValueError):
-        return jsonify({"error": "A valid integer meeting_key is required"}), 400
-    
-    sessions = list(db.sessions.find({'meeting_key': meeting_key}).sort('date_start', -1))
-    return jsonify(parse_json(sessions))
-
-
 # --- NEW, More Specific Endpoints ---
 
 @app.route('/api/meetings/<int:meeting_key>')
@@ -73,7 +58,6 @@ def get_sessions_for_meeting(meeting_key):
 
     query = {'meeting_key': meeting_key}
     if session_type_filter:
-        # Make the query case-insensitive
         query['session_name'] = {'$regex': f'^{session_type_filter}$', '$options': 'i'}
 
     sessions = list(db.sessions.find(query).sort('date_start', -1))
@@ -82,6 +66,15 @@ def get_sessions_for_meeting(meeting_key):
         return jsonify({"error": f"No sessions found for meeting {meeting_key}" + (f" of type {session_type_filter}" if session_type_filter else "")}), 404
 
     return jsonify(parse_json(sessions))
+
+# --- NEW ENDPOINT TO FETCH A SINGLE SESSION ---
+@app.route('/api/sessions/<int:session_key>')
+def get_session_details(session_key):
+    """Fetches details for a single session by its key."""
+    session = db.sessions.find_one({'_id': session_key})
+    if not session:
+        return jsonify({"error": "Session not found"}), 404
+    return jsonify(parse_json(session))
 
 
 # --- Lap and Driver Endpoints (no changes needed here for now) ---
