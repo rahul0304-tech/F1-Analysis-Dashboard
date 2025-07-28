@@ -64,7 +64,6 @@ def get_sessions_for_meeting(meeting_key):
             query['session_name'] = {'$regex': f'^{session_type_filter}$', '$options': 'i'}
         
         sessions = list(db.sessions.find(query).sort('date_start', -1))
-        # It's okay to return an empty list, so no 404 check needed here.
         return jsonify(parse_json(sessions))
     except Exception as e:
         logging.error(f"Error in /api/meetings/{meeting_key}/sessions: {e}")
@@ -84,21 +83,17 @@ def get_session_details(session_key):
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
     try:
-        # THE FIX: This pipeline now correctly uses $setWindowFields to rank drivers.
+        # THE FIX: This new pipeline is much more accurate for final positions.
+        # It finds each driver's last lap and uses their position on that lap.
         pipeline = [
             {'$match': {'session_key': session_key}},
+            {'$sort': {'lap_number': -1}},
             {'$group': {
                 '_id': '$driver_number',
-                'max_lap': {'$max': '$lap_number'}
+                'final_position': {'$first': '$position'},
+                'laps_completed': {'$first': '$lap_number'}
             }},
-            {'$sort': {'max_lap': -1}},
-            {'$setWindowFields': {
-                'partitionBy': None,
-                'sortBy': {'max_lap': -1},
-                'output': {
-                    'position': {'$rank': {}}
-                }
-            }},
+            {'$sort': {'final_position': 1}},
             {'$lookup': {
                 'from': 'drivers',
                 'localField': '_id',
@@ -108,12 +103,12 @@ def get_session_positions(session_key):
             {'$unwind': '$driver_info'},
             {'$project': {
                 '_id': 0,
-                'position': 1,
+                'position': '$final_position',
                 'driver_number': '$_id',
                 'full_name': '$driver_info.full_name',
                 'team_name': '$driver_info.team_name',
                 'team_color': '$driver_info.team_color',
-                'laps_completed': '$max_lap'
+                'laps_completed': '$laps_completed'
             }}
         ]
         positions = list(db.laps.aggregate(pipeline))
@@ -140,7 +135,12 @@ def get_laps():
             {'$match': match_stage},
             {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
             {'$unwind': '$driver_info'},
-            {'$addFields': {'full_name': '$driver_info.full_name', 'team_color': '$driver_info.team_color'}},
+            # Added team_name to this stage
+            {'$addFields': {
+                'full_name': '$driver_info.full_name',
+                'team_color': '$driver_info.team_color',
+                'team_name': '$driver_info.team_name'
+            }},
             {'$project': {'driver_info': 0}},
             {'$sort': sort_stage}
         ]
