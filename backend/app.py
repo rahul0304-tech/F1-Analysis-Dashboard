@@ -6,10 +6,10 @@ from pymongo import MongoClient
 from bson import json_util
 import json
 import logging
+from datetime import datetime
 
 # --- Setup ---
 app = Flask(__name__)
-# Using the simplest, most permissive CORS setup for maximum compatibility.
 CORS(app) 
 logging.basicConfig(level=logging.INFO)
 
@@ -35,6 +35,38 @@ def get_status():
     """API endpoint to check if the service is running."""
     return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
 
+# --- NEW ENDPOINT FOR SEASON STATS ---
+@app.route('/api/stats/season/<int:year>')
+def get_season_stats(year):
+    try:
+        # Count total sessions for the given year
+        total_sessions = db.sessions.count_documents({'year': year})
+        
+        # Get all unique driver numbers who participated in that year's sessions
+        pipeline = [
+            {'$match': {'year': year}},
+            {'$lookup': {
+                'from': 'session_results',
+                'localField': '_id',
+                'foreignField': 'session_key',
+                'as': 'results'
+            }},
+            {'$unwind': '$results'},
+            {'$group': {'_id': '$results.driver_number'}}
+        ]
+        drivers = list(db.sessions.aggregate(pipeline))
+        total_drivers = len(drivers)
+
+        return jsonify({
+            'year': year,
+            'total_sessions': total_sessions,
+            'total_drivers': total_drivers
+        })
+    except Exception as e:
+        logging.error(f"Error in /api/stats/season/{year}: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+
 @app.route('/api/meetings')
 def get_all_meetings():
     try:
@@ -43,6 +75,10 @@ def get_all_meetings():
     except Exception as e:
         logging.error(f"Error in /api/meetings: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
+
+# ... (rest of the app.py file remains the same)
+# I have omitted the rest of the file for brevity, but you should only need to add the new endpoint.
+# Make sure to place it after the get_status() function.
 
 @app.route('/api/meetings/<int:meeting_key>')
 def get_meeting_details(meeting_key):
@@ -156,10 +192,8 @@ def get_laps():
         logging.error(f"Error in /api/laps: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
-# --- NEW ENDPOINT FOR THE DRIVERS PAGE ---
 @app.route('/api/drivers/all')
 def get_all_drivers():
-    """Gets the master list of all unique drivers."""
     try:
         drivers = list(db.drivers.find().sort('full_name', 1))
         return jsonify(parse_json(drivers))
@@ -169,7 +203,6 @@ def get_all_drivers():
 
 @app.route('/api/drivers')
 def get_drivers_by_session():
-    """API endpoint to get drivers who participated in a given session."""
     try:
         session_key = int(request.args.get('session_key'))
         distinct_driver_nums = db.session_results.distinct('driver_number', {'session_key': session_key})
