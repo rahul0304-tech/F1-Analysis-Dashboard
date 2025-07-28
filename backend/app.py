@@ -83,45 +83,56 @@ def get_session_details(session_key):
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
     try:
-        # THE FIX: This pipeline is much more robust for calculating final positions.
+        # THE FIX: A simpler, more reliable pipeline to determine finishing order.
         pipeline = [
-            # Match only laps with a valid position recorded
-            {'$match': {
-                'session_key': session_key,
-                'position': {'$ne': None, '$gt': 0}
-            }},
-            # Find the last valid lap for each driver
+            # 1. Match all laps for the session
+            {'$match': {'session_key': session_key}},
+            # 2. Sort by lap number to easily find the last lap for each driver
             {'$sort': {'lap_number': -1}},
+            # 3. Group by driver to get their last lap's data
             {'$group': {
                 '_id': '$driver_number',
-                'final_position_on_lap': {'$first': '$position'},
-                'laps_completed': {'$first': '$lap_number'}
+                'laps_completed': {'$first': '$lap_number'},
+                'final_position_on_lap': {'$first': '$position'}
             }},
-            # Sort by laps completed (most first), then by position on their last lap (lowest first)
-            {'$sort': {'laps_completed': -1, 'final_position_on_lap': 1}},
-            # Add a final, accurate position rank
-            {'$setWindowFields': {
-                'partitionBy': None,
-                'sortBy': {'laps_completed': -1, 'final_position_on_lap': 1},
-                'output': {'position': {'$rank': {}}}
+            # 4. Sort by who completed the most laps, then by their final position
+            {'$sort': {
+                'laps_completed': -1,
+                'final_position_on_lap': 1
             }},
-            # Join with driver info
+            # 5. Join with driver details
             {'$lookup': {
-                'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'
+                'from': 'drivers',
+                'localField': '_id',
+                'foreignField': '_id',
+                'as': 'driver_info'
             }},
             {'$unwind': '$driver_info'},
-            # Project the final fields
+            # 6. Project the necessary fields, the rank will be added in Python
             {'$project': {
-                '_id': 0, 'position': 1, 'driver_number': '$_id',
-                'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name',
-                'team_color': '$driver_info.team_color', 'laps_completed': '$laps_completed'
+                '_id': 0,
+                'driver_number': '$_id',
+                'full_name': '$driver_info.full_name',
+                'team_name': '$driver_info.team_name',
+                'team_color': '$driver_info.team_color',
+                'laps_completed': '$laps_completed'
             }}
         ]
-        positions = list(db.laps.aggregate(pipeline))
-        return jsonify(parse_json(positions))
+        
+        results = list(db.laps.aggregate(pipeline))
+        
+        # 7. Add the position number in Python for 100% reliability
+        final_positions = []
+        for i, driver_data in enumerate(results):
+            driver_data['position'] = i + 1
+            final_positions.append(driver_data)
+            
+        return jsonify(parse_json(final_positions))
+        
     except Exception as e:
         logging.error(f"Error in /api/sessions/{session_key}/positions: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
+
 
 @app.route('/api/laps')
 def get_laps():
@@ -132,7 +143,6 @@ def get_laps():
         match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
         
         if sort_order == 'fastest':
-            # THE FIX: This pipeline now gets the single fastest lap for each of the top 10 drivers.
             pipeline = [
                 {'$match': match_stage},
                 {'$sort': {'lap_duration': 1}},
