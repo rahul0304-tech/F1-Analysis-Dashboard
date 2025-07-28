@@ -80,13 +80,8 @@ def get_session_details(session_key):
         logging.error(f"Error in /api/sessions/{session_key}: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
-# --- THE DEFINITIVE FIX FOR FINAL POSITIONS ---
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
-    """
-    Gets the final classification from the 'session_results' collection.
-    This is the correct and reliable source for final positions.
-    """
     try:
         pipeline = [
             {'$match': {'session_key': session_key}},
@@ -104,8 +99,8 @@ def get_session_positions(session_key):
                 'driver_number': '$driver_number',
                 'full_name': '$driver_info.full_name',
                 'team_name': '$driver_info.team_name',
-                'team_color': '$driver_info.team_colour', # Corrected field name from API
-                'laps_completed': '$number_of_laps' # Corrected field name from API
+                'team_color': '$driver_info.team_colour',
+                'laps_completed': '$number_of_laps'
             }}
         ]
         positions = list(db.session_results.aggregate(pipeline))
@@ -161,14 +156,24 @@ def get_laps():
         logging.error(f"Error in /api/laps: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
+# --- NEW ENDPOINT FOR THE DRIVERS PAGE ---
+@app.route('/api/drivers/all')
+def get_all_drivers():
+    """Gets the master list of all unique drivers."""
+    try:
+        drivers = list(db.drivers.find().sort('full_name', 1))
+        return jsonify(parse_json(drivers))
+    except Exception as e:
+        logging.error(f"Error in /api/drivers/all: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
 @app.route('/api/drivers')
-def get_drivers():
+def get_drivers_by_session():
+    """API endpoint to get drivers who participated in a given session."""
     try:
         session_key = int(request.args.get('session_key'))
-        # Get drivers from the official session results for accuracy
         distinct_driver_nums = db.session_results.distinct('driver_number', {'session_key': session_key})
         if not distinct_driver_nums:
-            # Fallback for sessions without results (e.g., Practice)
             distinct_driver_nums = db.laps.distinct('driver_number', {'session_key': session_key})
 
         drivers = list(db.drivers.find({'_id': {'$in': distinct_driver_nums}}).sort('team_name', 1))
