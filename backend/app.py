@@ -80,59 +80,39 @@ def get_session_details(session_key):
         logging.error(f"Error in /api/sessions/{session_key}: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
+# --- THE DEFINITIVE FIX FOR FINAL POSITIONS ---
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
+    """
+    Gets the final classification from the 'session_results' collection.
+    This is the correct and reliable source for final positions.
+    """
     try:
-        # THE DEFINITIVE FIX: This pipeline correctly determines finishing order.
         pipeline = [
-            # 1. Match all laps for the session
             {'$match': {'session_key': session_key}},
-            # 2. Sort by lap number descending to find each driver's last lap
-            {'$sort': {'lap_number': -1}},
-            # 3. Group by driver to get their last lap's data
-            {'$group': {
-                '_id': '$driver_number',
-                'laps_completed': {'$first': '$lap_number'},
-                'final_lap_date': {'$first': '$date'} # Use the lap timestamp
-            }},
-            # 4. Sort by who completed the most laps, then by who finished first (earliest timestamp)
-            {'$sort': {
-                'laps_completed': -1,
-                'final_lap_date': 1
-            }},
-            # 5. Join with driver details
+            {'$sort': {'position': 1}},
             {'$lookup': {
                 'from': 'drivers',
-                'localField': '_id',
+                'localField': 'driver_number',
                 'foreignField': '_id',
                 'as': 'driver_info'
             }},
             {'$unwind': '$driver_info'},
-            # 6. Project the necessary fields
             {'$project': {
                 '_id': 0,
-                'driver_number': '$_id',
+                'position': '$position',
+                'driver_number': '$driver_number',
                 'full_name': '$driver_info.full_name',
                 'team_name': '$driver_info.team_name',
-                'team_color': '$driver_info.team_color',
-                'laps_completed': '$laps_completed'
+                'team_color': '$driver_info.team_colour', # Corrected field name from API
+                'laps_completed': '$number_of_laps' # Corrected field name from API
             }}
         ]
-        
-        results = list(db.laps.aggregate(pipeline))
-        
-        # 7. Add the position number in Python for 100% reliability
-        final_positions = []
-        for i, driver_data in enumerate(results):
-            driver_data['position'] = i + 1
-            final_positions.append(driver_data)
-            
-        return jsonify(parse_json(final_positions))
-        
+        positions = list(db.session_results.aggregate(pipeline))
+        return jsonify(parse_json(positions))
     except Exception as e:
         logging.error(f"Error in /api/sessions/{session_key}/positions: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
-
 
 @app.route('/api/laps')
 def get_laps():
@@ -143,7 +123,6 @@ def get_laps():
         match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
         
         if sort_order == 'fastest':
-            # THE DEFINITIVE FIX: This pipeline now gets the single fastest lap for each of the top 10 drivers.
             pipeline = [
                 {'$match': match_stage},
                 {'$sort': {'lap_duration': 1}},
@@ -160,17 +139,16 @@ def get_laps():
                 {'$unwind': '$driver_info'},
                 {'$project': {
                     '_id': 0, 'driver_number': '$_id', 'full_name': '$driver_info.full_name',
-                    'team_name': '$driver_info.team_name', 'team_color': '$driver_info.team_color',
+                    'team_name': '$driver_info.team_name', 'team_color': '$driver_info.team_colour',
                     'lap_duration': '$fastest_lap_duration', 'lap_number': '$lap_number'
                 }}
             ]
         else:
-            # Default behavior to get all laps
             pipeline = [
                 {'$match': match_stage},
                 {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
                 {'$unwind': '$driver_info'},
-                {'$addFields': {'full_name': '$driver_info.full_name', 'team_color': '$driver_info.team_color', 'team_name': '$driver_info.team_name'}},
+                {'$addFields': {'full_name': '$driver_info.full_name', 'team_color': '$driver_info.team_colour', 'team_name': '$driver_info.team_name'}},
                 {'$project': {'driver_info': 0}},
                 {'$sort': {'lap_number': 1}}
             ]
@@ -187,26 +165,18 @@ def get_laps():
 def get_drivers():
     try:
         session_key = int(request.args.get('session_key'))
-        distinct_driver_nums = db.laps.distinct('driver_number', {'session_key': session_key})
+        # Get drivers from the official session results for accuracy
+        distinct_driver_nums = db.session_results.distinct('driver_number', {'session_key': session_key})
+        if not distinct_driver_nums:
+            # Fallback for sessions without results (e.g., Practice)
+            distinct_driver_nums = db.laps.distinct('driver_number', {'session_key': session_key})
+
         drivers = list(db.drivers.find({'_id': {'$in': distinct_driver_nums}}).sort('team_name', 1))
         return jsonify(parse_json(drivers))
     except (ValueError, TypeError):
         return jsonify({"error": "session_key must be a valid integer"}), 400
     except Exception as e:
         logging.error(f"Error in /api/drivers: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
-
-# --- LEGACY ENDPOINT (for original dashboard) ---
-@app.route('/api/sessions')
-def get_sessions_by_query():
-    try:
-        meeting_key = int(request.args.get('meeting_key'))
-        sessions = list(db.sessions.find({'meeting_key': meeting_key}).sort('date_start', -1))
-        return jsonify(parse_json(sessions))
-    except (ValueError, TypeError):
-        return jsonify({"error": "meeting_key must be a valid integer"}), 400
-    except Exception as e:
-        logging.error(f"Error in /api/sessions?meeting_key=...: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
 if __name__ == '__main__':
