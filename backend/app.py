@@ -84,16 +84,36 @@ def get_session_details(session_key):
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
     try:
+        # THE FIX: This pipeline now correctly uses $setWindowFields to rank drivers.
         pipeline = [
             {'$match': {'session_key': session_key}},
-            {'$group': {'_id': '$driver_number', 'max_lap': {'$max': '$lap_number'}}},
+            {'$group': {
+                '_id': '$driver_number',
+                'max_lap': {'$max': '$lap_number'}
+            }},
             {'$sort': {'max_lap': -1}},
-            {'$lookup': {'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'}},
+            {'$setWindowFields': {
+                'partitionBy': None,
+                'sortBy': {'max_lap': -1},
+                'output': {
+                    'position': {'$rank': {}}
+                }
+            }},
+            {'$lookup': {
+                'from': 'drivers',
+                'localField': '_id',
+                'foreignField': '_id',
+                'as': 'driver_info'
+            }},
             {'$unwind': '$driver_info'},
             {'$project': {
-                '_id': 0, 'position': {'$rank': {}}, 'driver_number': '$_id',
-                'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name',
-                'team_color': '$driver_info.team_color', 'laps_completed': '$max_lap'
+                '_id': 0,
+                'position': 1,
+                'driver_number': '$_id',
+                'full_name': '$driver_info.full_name',
+                'team_name': '$driver_info.team_name',
+                'team_color': '$driver_info.team_color',
+                'laps_completed': '$max_lap'
             }}
         ]
         positions = list(db.laps.aggregate(pipeline))
