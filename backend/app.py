@@ -42,9 +42,13 @@ def get_analysis():
         
         results = []
         if analysis_type == 'career':
-            # Pipeline for wins and podiums
+            # Find all "Race" session keys for wins/podiums
+            race_sessions = db.sessions.find({'session_name': 'Race'}, {'_id': 1})
+            race_session_keys = [s['_id'] for s in race_sessions]
+
+            # Pipeline for wins and podiums from Race sessions only
             pipeline = [
-                {'$match': {'driver_number': {'$in': driver_ids}, 'position': {'$ne': None}}},
+                {'$match': {'driver_number': {'$in': driver_ids}, 'session_key': {'$in': race_session_keys}, 'position': {'$ne': None}}},
                 {'$group': {
                     '_id': '$driver_number',
                     'wins': {'$sum': {'$cond': [{'$eq': ['$position', 1]}, 1, 0]}},
@@ -56,18 +60,23 @@ def get_analysis():
             ]
             results_data = list(db.session_results.aggregate(pipeline))
             
+            # Find all "Qualifying" session keys for poles
+            qualifying_sessions = db.sessions.find({'session_name': 'Qualifying'}, {'_id': 1})
+            qualifying_session_keys = [s['_id'] for s in qualifying_sessions]
+
             # Combine results and add poles
             for driver_id in driver_ids:
-                # Find existing result or create a new one
                 driver_result = next((r for r in results_data if r['driver_number'] == driver_id), {'driver_number': driver_id, 'wins': 0, 'podiums': 0})
                 
-                # CORRECTLY count poles from grid position
-                poles = db.session_results.count_documents({'driver_number': driver_id, 'grid_position': 1})
+                # CORRECTLY count poles from P1 in Qualifying sessions
+                poles = db.session_results.count_documents({
+                    'driver_number': driver_id, 
+                    'position': 1,
+                    'session_key': {'$in': qualifying_session_keys}
+                })
                 driver_result['poles'] = poles
                 
-                # Ensure driver is in the final results list
-                if not any(r['driver_number'] == driver_id for r in results):
-                    results.append(driver_result)
+                results.append(driver_result)
 
 
         elif analysis_type == 'season':
