@@ -28,7 +28,51 @@ def parse_json(data):
     """Helper function to convert MongoDB BSON to JSON."""
     return json.loads(json_util.dumps(data))
 
-# --- Dedicated endpoint for the Comparison Page ---
+# --- NEW: Dedicated endpoint for the robust Comparison Page ---
+@app.route('/api/comparison/laps', methods=['POST'])
+def get_comparison_laps():
+    try:
+        comparison_columns = request.json
+        if not comparison_columns or not isinstance(comparison_columns, list):
+            return jsonify({"error": "Request body must be a list of comparison columns"}), 400
+
+        response_data = []
+        for column in comparison_columns:
+            session_key = column.get('sessionKey')
+            driver_number = column.get('driverNumber')
+
+            if not session_key or not driver_number:
+                continue
+
+            # Fetch all laps for the specified driver and session
+            pipeline = [
+                {'$match': {'session_key': session_key, 'driver_number': driver_number, 'lap_duration': {'$ne': None}}},
+                {'$project': {
+                    '_id': 0,
+                    'lap_number': 1,
+                    'lap_duration': 1,
+                    'sector_1_time': 1,
+                    'sector_2_time': 1,
+                    'sector_3_time': 1,
+                    'tyre_compound': 1
+                }},
+                {'$sort': {'lap_number': 1}}
+            ]
+            laps = list(db.laps.aggregate(pipeline))
+            
+            response_data.append({
+                "columnId": column.get("id"),
+                "laps": laps
+            })
+
+        return jsonify(parse_json(response_data))
+    except Exception as e:
+        logging.error(f"Error in /api/comparison/laps: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+
+# --- All other endpoints remain unchanged below ---
+
 @app.route('/api/analysis')
 def get_analysis():
     try:
@@ -42,11 +86,8 @@ def get_analysis():
         
         results = []
         if analysis_type == 'career':
-            # Find all "Race" session keys for wins/podiums
             race_sessions = db.sessions.find({'session_name': 'Race'}, {'_id': 1})
             race_session_keys = [s['_id'] for s in race_sessions]
-
-            # Pipeline for wins and podiums from Race sessions only
             pipeline = [
                 {'$match': {'driver_number': {'$in': driver_ids}, 'session_key': {'$in': race_session_keys}, 'position': {'$ne': None}}},
                 {'$group': {
@@ -54,31 +95,20 @@ def get_analysis():
                     'wins': {'$sum': {'$cond': [{'$eq': ['$position', 1]}, 1, 0]}},
                     'podiums': {'$sum': {'$cond': [{'$lte': ['$position', 3]}, 1, 0]}},
                 }},
-                {'$project': {
-                    '_id': 0, 'driver_number': '$_id', 'wins': 1, 'podiums': 1
-                }}
+                {'$project': {'_id': 0, 'driver_number': '$_id', 'wins': 1, 'podiums': 1}}
             ]
             results_data = list(db.session_results.aggregate(pipeline))
-            
-            # Find all "Qualifying" session keys for poles
             qualifying_sessions = db.sessions.find({'session_name': 'Qualifying'}, {'_id': 1})
             qualifying_session_keys = [s['_id'] for s in qualifying_sessions]
-
-            # Combine results and add poles
             for driver_id in driver_ids:
                 driver_result = next((r for r in results_data if r['driver_number'] == driver_id), {'driver_number': driver_id, 'wins': 0, 'podiums': 0})
-                
-                # CORRECTLY count poles from P1 in Qualifying sessions
                 poles = db.session_results.count_documents({
                     'driver_number': driver_id, 
                     'position': 1,
                     'session_key': {'$in': qualifying_session_keys}
                 })
                 driver_result['poles'] = poles
-                
                 results.append(driver_result)
-
-
         elif analysis_type == 'season':
             year = int(request.args.get('year'))
             pipeline = [
@@ -93,7 +123,6 @@ def get_analysis():
                 {'$project': {'_id': 0, 'driver_number': '$_id', 'wins': 1, 'podiums': 1}}
             ]
             results = list(db.session_results.aggregate(pipeline))
-
         elif analysis_type == 'track':
             circuit_key = int(request.args.get('circuit_key'))
             pipeline = [
@@ -117,8 +146,6 @@ def get_analysis():
     except Exception as e:
         logging.error(f"Error in /api/analysis: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
-
-# --- All other endpoints remain unchanged below ---
 
 @app.route('/api/status')
 def get_status():
