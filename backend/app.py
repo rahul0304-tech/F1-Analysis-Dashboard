@@ -196,39 +196,60 @@ def get_session_positions(session_key):
         logging.error(f"Error in /api/sessions/{session_key}/positions: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
-# --- Other Endpoints ---
-
+# --- MODIFIED: Laps endpoint now returns complete data ---
 @app.route('/api/laps')
 def get_laps():
     try:
-        session_key = int(request.args.get('session_key'))
+        session_key_str = request.args.get('session_key')
+        if not session_key_str:
+            return jsonify({"error": "session_key query parameter is required"}), 400
+        
+        session_key = int(session_key_str)
         sort_order = request.args.get('sort')
+        
         match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
+        
+        # Base pipeline to get all lap details
+        pipeline = [
+            {'$match': match_stage},
+            {'$lookup': {
+                'from': 'drivers',
+                'localField': 'driver_number',
+                'foreignField': '_id',
+                'as': 'driver_info'
+            }},
+            {'$unwind': '$driver_info'},
+            {'$project': {
+                '_id': 1,
+                'session_key': 1,
+                'driver_number': 1,
+                'lap_number': 1,
+                'lap_duration': 1,
+                'stint': 1,
+                'is_pit_out_lap': 1,
+                'tyre_compound': 1, # This is a new field from the collection
+                'full_name': '$driver_info.full_name',
+                'team_name': '$driver_info.team_name',
+                'team_color': '$driver_info.team_colour'
+            }}
+        ]
+
         if sort_order == 'fastest':
-            pipeline = [
-                {'$match': match_stage}, {'$sort': {'lap_duration': 1}},
+            # Append stages for fastest lap calculation
+            pipeline.extend([
+                {'$sort': {'lap_duration': 1}},
                 {'$group': {
-                    '_id': '$driver_number', 'fastest_lap_duration': {'$first': '$lap_duration'},
-                    'lap_number': {'$first': '$lap_number'}
+                    '_id': '$driver_number',
+                    'fastest_lap_doc': {'$first': '$$ROOT'}
                 }},
-                {'$sort': {'fastest_lap_duration': 1}}, {'$limit': 10},
-                {'$lookup': {'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'}},
-                {'$unwind': '$driver_info'},
-                {'$project': {
-                    '_id': 0, 'driver_number': '$_id', 'full_name': '$driver_info.full_name',
-                    'team_name': '$driver_info.team_name', 'team_color': '$driver_info.team_colour',
-                    'lap_duration': '$fastest_lap_duration', 'lap_number': '$lap_number'
-                }}
-            ]
+                {'$replaceRoot': {'newRoot': '$fastest_lap_doc'}},
+                {'$sort': {'lap_duration': 1}},
+                {'$limit': 10}
+            ])
         else:
-            pipeline = [
-                {'$match': match_stage},
-                {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
-                {'$unwind': '$driver_info'},
-                {'$addFields': {'full_name': '$driver_info.full_name', 'team_color': '$driver_info.team_colour', 'team_name': '$driver_info.team_name'}},
-                {'$project': {'driver_info': 0}},
-                {'$sort': {'lap_number': 1}}
-            ]
+            # Default sort for all laps
+            pipeline.append({'$sort': {'lap_number': 1, 'lap_duration': 1}})
+
         laps = list(db.laps.aggregate(pipeline))
         return jsonify(parse_json(laps))
     except (ValueError, TypeError):
@@ -288,11 +309,9 @@ def get_season_stats(year):
         logging.error(f"Error in /api/stats/season/{year}: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
         
-# --- MODIFIED: Correct logic for career stats ---
 @app.route('/api/drivers/<int:driver_number>/stats')
 def get_driver_stats(driver_number):
     try:
-        # --- Calculate Grand Prix Wins ---
         race_sessions = db.sessions.find({'session_name': 'Race'}, {'_id': 1})
         race_session_keys = [s['_id'] for s in race_sessions]
         wins = db.session_results.count_documents({
@@ -301,7 +320,6 @@ def get_driver_stats(driver_number):
             'session_key': {'$in': race_session_keys}
         })
         
-        # --- Calculate Championships ---
         championship_pipeline = [
             {'$lookup': {
                 'from': 'sessions', 'localField': 'session_key',
