@@ -62,11 +62,8 @@ def get_analysis():
             
             results = []
             for driver_id in driver_ids:
-                # Find all meetings in the specified year
                 meetings_in_year = list(db.meetings.find({'year': year}, {'_id': 1}))
                 meeting_keys = [m['_id'] for m in meetings_in_year]
-                
-                # Find all sessions within those meetings
                 sessions_in_meetings = list(db.sessions.find({'meeting_key': {'$in': meeting_keys}}, {'_id': 1}))
                 session_keys = [s['_id'] for s in sessions_in_meetings]
 
@@ -111,7 +108,6 @@ def get_analysis():
 
 
 # ... (rest of your existing app.py code) ...
-# I have omitted the other endpoints for brevity. You only need to add/replace the /api/analysis endpoint.
 @app.route('/api/status')
 def get_status():
     return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
