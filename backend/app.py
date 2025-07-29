@@ -39,7 +39,6 @@ def get_status():
 @app.route('/api/meetings')
 def get_all_meetings():
     try:
-        # This pipeline ensures no duplicate meetings are returned
         pipeline = [
             {'$sort': {'date_start': -1}},
             {'$group': {
@@ -66,7 +65,6 @@ def get_meeting_details(meeting_key):
         logging.error(f"Error in /api/meetings/{meeting_key}: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
-# --- NEW: Consolidated endpoint for MeetingDetailPage ---
 @app.route('/api/meetings/<int:meeting_key>/details')
 def get_meeting_details_consolidated(meeting_key):
     try:
@@ -124,7 +122,6 @@ def get_session_details(session_key):
         logging.error(f"Error in /api/sessions/{session_key}: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
-# --- NEW: Consolidated endpoint for SessionDetailPage ---
 @app.route('/api/sessions/<int:session_key>/details')
 def get_session_details_consolidated(session_key):
     try:
@@ -264,7 +261,6 @@ def get_drivers_by_session():
         logging.error(f"Error in /api/drivers: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
-# --- The original endpoints from your file are preserved below ---
 @app.route('/api/stats/season/<int:year>')
 def get_season_stats(year):
     try:
@@ -292,18 +288,25 @@ def get_season_stats(year):
         logging.error(f"Error in /api/stats/season/{year}: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
         
+# --- MODIFIED: Correct logic for career stats ---
 @app.route('/api/drivers/<int:driver_number>/stats')
 def get_driver_stats(driver_number):
     try:
+        # Step 1: Find all session keys that are actual "Race" events.
+        race_sessions = db.sessions.find({'session_name': 'Race'}, {'_id': 1})
+        race_session_keys = [s['_id'] for s in race_sessions]
+
+        # Step 2: Count wins only from those race sessions.
         wins = db.session_results.count_documents({
             'driver_number': driver_number,
             'position': 1,
-            'session_name': 'Race'
+            'session_key': {'$in': race_session_keys} # Use the list of race keys
         })
+        
         stats = {
             'driver_number': driver_number,
             'grand_prix_victories': wins,
-            'championships_won': 0 
+            'championships_won': 0 # This remains a placeholder
         }
         return jsonify(parse_json(stats))
     except Exception as e:
