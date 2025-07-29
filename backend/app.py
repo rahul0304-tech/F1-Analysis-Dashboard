@@ -35,30 +35,6 @@ def get_status():
     """API endpoint to check if the service is running."""
     return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
 
-# --- NEW ENDPOINT FOR HISTORICAL DRIVER STATS ---
-@app.route('/api/drivers/<int:driver_number>/stats')
-def get_driver_stats(driver_number):
-    try:
-        # Calculate total Grand Prix victories
-        wins = db.session_results.count_documents({
-            'driver_number': driver_number,
-            'position': 1,
-            'session_name': 'Race' # Ensure we only count main race wins
-        })
-        
-        # In a real-world scenario, you would pre-calculate and store these stats.
-        # For this project, we calculate them on-the-fly.
-        stats = {
-            'driver_number': driver_number,
-            'grand_prix_victories': wins,
-            # Placeholder for future stats
-            'championships_won': 0 
-        }
-        return jsonify(parse_json(stats))
-    except Exception as e:
-        logging.error(f"Error in /api/drivers/{driver_number}/stats: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
-
 # --- NEW TACTICAL ENDPOINT FOR MULTI-DRIVER COMPARISON ---
 @app.route('/api/sessions/<int:session_key>/compare')
 def get_driver_comparison(session_key):
@@ -131,15 +107,85 @@ def get_season_stats(year):
         logging.error(f"Error in /api/stats/season/{year}: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
-
+# --- MODIFIED: Returns a clean, de-duplicated list of meetings ---
 @app.route('/api/meetings')
 def get_all_meetings():
     try:
-        meetings = list(db.meetings.find().sort([('year', -1), ('date_start', -1)]))
+        pipeline = [
+            # Sort by date first to ensure the '$first' operator gets the most recent document
+            # in case of any true duplicates.
+            {'$sort': {'date_start': -1}},
+            # Group by a unique identifier, for example, the meeting name and year
+            {'$group': {
+                '_id': {
+                    'year': '$year',
+                    'meeting_name': '$meeting_name'
+                },
+                # Promote the entire document of the first entry in each group
+                'doc': {'$first': '$$ROOT'}
+            }},
+            # Promote the document back to the top level
+            {'$replaceRoot': {'newRoot': '$doc'}},
+            # Sort the final results by year and then date
+            {'$sort': {'year': -1, 'date_start': -1}}
+        ]
+        meetings = list(db.meetings.aggregate(pipeline))
         return jsonify(parse_json(meetings))
     except Exception as e:
         logging.error(f"Error in /api/meetings: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
+
+# --- NEW: Consolidated endpoint for meeting details ---
+@app.route('/api/meetings/<int:meeting_key>/details')
+def get_meeting_details_consolidated(meeting_key):
+    try:
+        # 1. Fetch the core meeting details
+        meeting = db.meetings.find_one({'_id': meeting_key})
+        if not meeting:
+            return jsonify({"error": "Meeting not found"}), 404
+
+        # 2. Fetch all associated sessions
+        sessions = list(db.sessions.find({'meeting_key': meeting_key}).sort('date_start', -1))
+
+        # 3. Find the race winner, if one exists
+        winner = None
+        race_session = next((s for s in sessions if s['session_name'].lower() == 'race'), None)
+        
+        if race_session:
+            # Re-use the same logic from the positions endpoint to get full winner details
+            pipeline = [
+                {'$match': {'session_key': race_session['_id'], 'position': 1}},
+                {'$limit': 1},
+                {'$lookup': {
+                    'from': 'drivers',
+                    'localField': 'driver_number',
+                    'foreignField': '_id',
+                    'as': 'driver_info'
+                }},
+                {'$unwind': '$driver_info'},
+                {'$project': {
+                    '_id': 0, 'position': '$position', 'driver_number': '$driver_number',
+                    'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name',
+                    'team_color': '$driver_info.team_colour', 'laps_completed': '$number_of_laps',
+                    'headshot_url': '$driver_info.headshot_url', 'dnf': '$dnf'
+                }}
+            ]
+            winner_data = list(db.session_results.aggregate(pipeline))
+            if winner_data:
+                winner = winner_data[0]
+        
+        # 4. Consolidate into a single response object
+        response = {
+            'meeting_details': meeting,
+            'sessions': sessions,
+            'winner': winner
+        }
+        return jsonify(parse_json(response))
+
+    except Exception as e:
+        logging.error(f"Error in /api/meetings/{meeting_key}/details: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
 
 @app.route('/api/meetings/<int:meeting_key>')
 def get_meeting_details(meeting_key):
