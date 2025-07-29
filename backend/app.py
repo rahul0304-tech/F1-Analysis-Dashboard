@@ -111,9 +111,18 @@ def get_session_details(session_key):
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
     try:
+        # THE DEFINITIVE FIX: This pipeline correctly sorts finishers above non-finishers (DNF).
         pipeline = [
             {'$match': {'session_key': session_key}},
-            {'$sort': {'position': 1}},
+            # 1. Add a field to distinguish finishers from non-finishers
+            {'$addFields': {
+                'is_finisher': {
+                    '$cond': { 'if': { '$eq': [ "$dnf", False ] }, 'then': 1, 'else': 2 }
+                }
+            }},
+            # 2. Sort by finisher status first, then by official position
+            {'$sort': {'is_finisher': 1, 'position': 1}},
+            # 3. Join with driver details
             {'$lookup': {
                 'from': 'drivers',
                 'localField': 'driver_number',
@@ -121,6 +130,7 @@ def get_session_positions(session_key):
                 'as': 'driver_info'
             }},
             {'$unwind': '$driver_info'},
+            # 4. Project the final fields
             {'$project': {
                 '_id': 0,
                 'position': '$position',
@@ -129,8 +139,8 @@ def get_session_positions(session_key):
                 'team_name': '$driver_info.team_name',
                 'team_color': '$driver_info.team_colour',
                 'laps_completed': '$number_of_laps',
-                # THE FIX: Add the headshot_url to the response
-                'headshot_url': '$driver_info.headshot_url'
+                'headshot_url': '$driver_info.headshot_url',
+                'dnf': '$dnf' # Pass the DNF status to the frontend
             }}
         ]
         positions = list(db.session_results.aggregate(pipeline))
