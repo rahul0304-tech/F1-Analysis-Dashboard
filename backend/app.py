@@ -28,97 +28,35 @@ def parse_json(data):
     """Helper function to convert MongoDB BSON to JSON."""
     return json.loads(json_util.dumps(data))
 
-# --- API Endpoints with Robust Error Handling ---
+# --- API Endpoints ---
 
 @app.route('/api/status')
 def get_status():
-    """API endpoint to check if the service is running."""
     return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
 
-
-# --- MODIFIED: Flexible endpoint for fetching sessions ---
-@app.route('/api/sessions')
-def get_sessions():
-    """
-    Fetches sessions. If a 'meeting_key' is provided, it filters sessions
-    for that meeting. Otherwise, it returns all sessions.
-    """
+# --- RESTORED: Endpoint for high-level season stats ---
+@app.route('/api/stats/season/<int:year>')
+def get_season_stats(year):
     try:
-        meeting_key_str = request.args.get('meeting_key')
-        query = {}
-        if meeting_key_str:
-            query['meeting_key'] = int(meeting_key_str)
-        
-        sessions = list(db.sessions.find(query).sort('date_start', -1))
-        return jsonify(parse_json(sessions))
-    except (ValueError, TypeError):
-        return jsonify({"error": "meeting_key must be a valid integer"}), 400
+        total_sessions = db.sessions.count_documents({'year': year})
+        # A more reliable way to count unique drivers for a season
+        pipeline = [
+            {'$match': {'year': year}},
+            {'$group': {'_id': '$driver_number'}}
+        ]
+        drivers = list(db.session_results.aggregate(pipeline))
+        total_drivers = len(drivers)
+
+        return jsonify({
+            'year': year,
+            'total_sessions': total_sessions,
+            'total_drivers': total_drivers
+        })
     except Exception as e:
-        logging.error(f"Error in /api/sessions: {e}")
+        logging.error(f"Error in /api/stats/season/{year}: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
-
-# --- NEW: Consolidated endpoint for session details ---
-@app.route('/api/sessions/<int:session_key>/details')
-def get_session_details_consolidated(session_key):
-    try:
-        # 1. Fetch the core session details
-        session = db.sessions.find_one({'_id': session_key})
-        if not session:
-            return jsonify({"error": "Session not found"}), 404
-
-        # 2. Fetch the parent meeting details
-        meeting = db.meetings.find_one({'_id': session['meeting_key']})
-
-        # 3. Fetch final positions
-        positions_pipeline = [
-            {'$match': {'session_key': session_key}},
-            {'$addFields': {'is_finisher': {'$cond': {'if': {'$eq': ["$dnf", False]}, 'then': 1, 'else': 2}}}},
-            {'$sort': {'is_finisher': 1, 'position': 1}},
-            {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
-            {'$unwind': '$driver_info'},
-            {'$project': {
-                '_id': 0, 'position': '$position', 'driver_number': '$driver_number',
-                'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name',
-                'team_color': '$driver_info.team_colour', 'laps_completed': '$number_of_laps',
-                'headshot_url': '$driver_info.headshot_url', 'dnf': '$dnf'
-            }}
-        ]
-        positions = list(db.session_results.aggregate(positions_pipeline))
-
-        # 4. Fetch top 10 fastest laps
-        laps_pipeline = [
-            {'$match': {'session_key': session_key, 'lap_duration': {'$ne': None}}},
-            {'$sort': {'lap_duration': 1}},
-            {'$group': {
-                '_id': '$driver_number', 'fastest_lap_duration': {'$first': '$lap_duration'},
-                'lap_number': {'$first': '$lap_number'}
-            }},
-            {'$sort': {'fastest_lap_duration': 1}},
-            {'$limit': 10},
-            {'$lookup': {'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'}},
-            {'$unwind': '$driver_info'},
-            {'$project': {
-                '_id': 0, 'driver_number': '$_id', 'full_name': '$driver_info.full_name',
-                'team_name': '$driver_info.team_name', 'team_color': '$driver_info.team_colour',
-                'lap_duration': '$fastest_lap_duration', 'lap_number': '$lap_number'
-            }}
-        ]
-        fastest_laps = list(db.laps.aggregate(laps_pipeline))
-
-        # 5. Consolidate into a single response
-        response = {
-            'session': session,
-            'meeting': meeting,
-            'positions': positions,
-            'fastest_laps': fastest_laps
-        }
-        return jsonify(parse_json(response))
-
-    except Exception as e:
-        logging.error(f"Error in /api/sessions/{session_key}/details: {e}")
-        return jsonify({"error": "An internal server error occurred"}), 500
-
+# --- Meetings Endpoints ---
 
 @app.route('/api/meetings')
 def get_all_meetings():
@@ -136,6 +74,17 @@ def get_all_meetings():
         return jsonify(parse_json(meetings))
     except Exception as e:
         logging.error(f"Error in /api/meetings: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+@app.route('/api/meetings/<int:meeting_key>')
+def get_meeting_details(meeting_key):
+    try:
+        meeting = db.meetings.find_one({'_id': meeting_key})
+        if not meeting:
+            return jsonify({"error": "Meeting not found"}), 404
+        return jsonify(parse_json(meeting))
+    except Exception as e:
+        logging.error(f"Error in /api/meetings/{meeting_key}: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
 @app.route('/api/meetings/<int:meeting_key>/details')
@@ -169,18 +118,21 @@ def get_meeting_details_consolidated(meeting_key):
         logging.error(f"Error in /api/meetings/{meeting_key}/details: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
-# --- The rest of your app.py endpoints remain the same ---
-# (get_meeting_details, get_session_details, get_session_positions, get_laps, etc.)
+# --- Sessions Endpoints ---
 
-@app.route('/api/meetings/<int:meeting_key>')
-def get_meeting_details(meeting_key):
+@app.route('/api/sessions')
+def get_sessions():
     try:
-        meeting = db.meetings.find_one({'_id': meeting_key})
-        if not meeting:
-            return jsonify({"error": "Meeting not found"}), 404
-        return jsonify(parse_json(meeting))
+        meeting_key_str = request.args.get('meeting_key')
+        query = {}
+        if meeting_key_str:
+            query['meeting_key'] = int(meeting_key_str)
+        sessions = list(db.sessions.find(query).sort('date_start', -1))
+        return jsonify(parse_json(sessions))
+    except (ValueError, TypeError):
+        return jsonify({"error": "meeting_key must be a valid integer"}), 400
     except Exception as e:
-        logging.error(f"Error in /api/meetings/{meeting_key}: {e}")
+        logging.error(f"Error in /api/sessions: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
 @app.route('/api/sessions/<int:session_key>')
@@ -194,34 +146,68 @@ def get_session_details(session_key):
         logging.error(f"Error in /api/sessions/{session_key}: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
+@app.route('/api/sessions/<int:session_key>/details')
+def get_session_details_consolidated(session_key):
+    try:
+        session = db.sessions.find_one({'_id': session_key})
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+        meeting = db.meetings.find_one({'_id': session['meeting_key']})
+        positions_pipeline = [
+            {'$match': {'session_key': session_key}},
+            {'$addFields': {'is_finisher': {'$cond': {'if': {'$eq': ["$dnf", False]}, 'then': 1, 'else': 2}}}},
+            {'$sort': {'is_finisher': 1, 'position': 1}},
+            {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
+            {'$unwind': '$driver_info'},
+            {'$project': {
+                '_id': 0, 'position': '$position', 'driver_number': '$driver_number',
+                'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name',
+                'team_color': '$driver_info.team_colour', 'laps_completed': '$number_of_laps',
+                'headshot_url': '$driver_info.headshot_url', 'dnf': '$dnf'
+            }}
+        ]
+        positions = list(db.session_results.aggregate(positions_pipeline))
+        laps_pipeline = [
+            {'$match': {'session_key': session_key, 'lap_duration': {'$ne': None}}},
+            {'$sort': {'lap_duration': 1}},
+            {'$group': {
+                '_id': '$driver_number', 'fastest_lap_duration': {'$first': '$lap_duration'},
+                'lap_number': {'$first': '$lap_number'}
+            }},
+            {'$sort': {'fastest_lap_duration': 1}},
+            {'$limit': 10},
+            {'$lookup': {'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'}},
+            {'$unwind': '$driver_info'},
+            {'$project': {
+                '_id': 0, 'driver_number': '$_id', 'full_name': '$driver_info.full_name',
+                'team_name': '$driver_info.team_name', 'team_color': '$driver_info.team_colour',
+                'lap_duration': '$fastest_lap_duration', 'lap_number': '$lap_number'
+            }}
+        ]
+        fastest_laps = list(db.laps.aggregate(laps_pipeline))
+        response = {
+            'session': session, 'meeting': meeting,
+            'positions': positions, 'fastest_laps': fastest_laps
+        }
+        return jsonify(parse_json(response))
+    except Exception as e:
+        logging.error(f"Error in /api/sessions/{session_key}/details: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
     try:
         pipeline = [
             {'$match': {'session_key': session_key}},
-            {'$addFields': {
-                'is_finisher': {
-                    '$cond': { 'if': { '$eq': [ "$dnf", False ] }, 'then': 1, 'else': 2 }
-                }
-            }},
+            {'$addFields': {'is_finisher': {'$cond': { 'if': { '$eq': [ "$dnf", False ] }, 'then': 1, 'else': 2 }}}},
             {'$sort': {'is_finisher': 1, 'position': 1}},
-            {'$lookup': {
-                'from': 'drivers',
-                'localField': 'driver_number',
-                'foreignField': '_id',
-                'as': 'driver_info'
-            }},
+            {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
             {'$unwind': '$driver_info'},
             {'$project': {
-                '_id': 0,
-                'position': '$position',
-                'driver_number': '$driver_number',
-                'full_name': '$driver_info.full_name',
-                'team_name': '$driver_info.team_name',
-                'team_color': '$driver_info.team_colour',
-                'laps_completed': '$number_of_laps',
-                'headshot_url': '$driver_info.headshot_url',
-                'dnf': '$dnf'
+                '_id': 0, 'position': '$position', 'driver_number': '$driver_number',
+                'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name',
+                'team_color': '$driver_info.team_colour', 'laps_completed': '$number_of_laps',
+                'headshot_url': '$driver_info.headshot_url', 'dnf': '$dnf'
             }}
         ]
         positions = list(db.session_results.aggregate(pipeline))
@@ -230,28 +216,23 @@ def get_session_positions(session_key):
         logging.error(f"Error in /api/sessions/{session_key}/positions: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
+# --- Other Endpoints ---
+
 @app.route('/api/laps')
 def get_laps():
     try:
         session_key = int(request.args.get('session_key'))
         sort_order = request.args.get('sort')
-        
         match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
-        
         if sort_order == 'fastest':
             pipeline = [
-                {'$match': match_stage},
-                {'$sort': {'lap_duration': 1}},
+                {'$match': match_stage}, {'$sort': {'lap_duration': 1}},
                 {'$group': {
-                    '_id': '$driver_number',
-                    'fastest_lap_duration': {'$first': '$lap_duration'},
+                    '_id': '$driver_number', 'fastest_lap_duration': {'$first': '$lap_duration'},
                     'lap_number': {'$first': '$lap_number'}
                 }},
-                {'$sort': {'fastest_lap_duration': 1}},
-                {'$limit': 10},
-                {'$lookup': {
-                    'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'
-                }},
+                {'$sort': {'fastest_lap_duration': 1}}, {'$limit': 10},
+                {'$lookup': {'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'}},
                 {'$unwind': '$driver_info'},
                 {'$project': {
                     '_id': 0, 'driver_number': '$_id', 'full_name': '$driver_info.full_name',
@@ -268,7 +249,6 @@ def get_laps():
                 {'$project': {'driver_info': 0}},
                 {'$sort': {'lap_number': 1}}
             ]
-        
         laps = list(db.laps.aggregate(pipeline))
         return jsonify(parse_json(laps))
     except (ValueError, TypeError):
@@ -293,7 +273,6 @@ def get_drivers_by_session():
         distinct_driver_nums = db.session_results.distinct('driver_number', {'session_key': session_key})
         if not distinct_driver_nums:
             distinct_driver_nums = db.laps.distinct('driver_number', {'session_key': session_key})
-
         drivers = list(db.drivers.find({'_id': {'$in': distinct_driver_nums}}).sort('team_name', 1))
         return jsonify(parse_json(drivers))
     except (ValueError, TypeError):
