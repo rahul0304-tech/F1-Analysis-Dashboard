@@ -35,24 +35,49 @@ def get_status():
     """API endpoint to check if the service is running."""
     return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
 
-# --- NEW TACTICAL ENDPOINT FOR COMPARISON ---
+# --- NEW ENDPOINT FOR HISTORICAL DRIVER STATS ---
+@app.route('/api/drivers/<int:driver_number>/stats')
+def get_driver_stats(driver_number):
+    try:
+        # Calculate total Grand Prix victories
+        wins = db.session_results.count_documents({
+            'driver_number': driver_number,
+            'position': 1,
+            'session_name': 'Race' # Ensure we only count main race wins
+        })
+        
+        # In a real-world scenario, you would pre-calculate and store these stats.
+        # For this project, we calculate them on-the-fly.
+        stats = {
+            'driver_number': driver_number,
+            'grand_prix_victories': wins,
+            # Placeholder for future stats
+            'championships_won': 0 
+        }
+        return jsonify(parse_json(stats))
+    except Exception as e:
+        logging.error(f"Error in /api/drivers/{driver_number}/stats: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+# --- NEW TACTICAL ENDPOINT FOR MULTI-DRIVER COMPARISON ---
 @app.route('/api/sessions/<int:session_key>/compare')
 def get_driver_comparison(session_key):
     try:
-        driver1_num = int(request.args.get('driver1'))
-        driver2_num = int(request.args.get('driver2'))
+        driver_ids_str = request.args.get('drivers')
+        if not driver_ids_str:
+            return jsonify({"error": "drivers query parameter is required"}), 400
         
-        drivers_to_compare = [driver1_num, driver2_num]
+        driver_ids = [int(num) for num in driver_ids_str.split(',')]
         
-        # --- Fetch Data for Both Drivers ---
-        positions_data = list(db.session_results.find({'session_key': session_key, 'driver_number': {'$in': drivers_to_compare}}))
+        # --- Fetch Data for All Selected Drivers ---
+        positions_data = list(db.session_results.find({'session_key': session_key, 'driver_number': {'$in': driver_ids}}))
         fastest_laps_data = list(db.laps.aggregate([
-            {'$match': {'session_key': session_key, 'driver_number': {'$in': drivers_to_compare}, 'lap_duration': {'$ne': None}}},
+            {'$match': {'session_key': session_key, 'driver_number': {'$in': driver_ids}, 'lap_duration': {'$ne': None}}},
             {'$sort': {'lap_duration': 1}},
             {'$group': {'_id': '$driver_number', 'fastest_lap': {'$first': '$lap_duration'}}}
         ]))
         pit_stops_data = list(db.pit_stops.aggregate([
-            {'$match': {'session_key': session_key, 'driver_number': {'$in': drivers_to_compare}}},
+            {'$match': {'session_key': session_key, 'driver_number': {'$in': driver_ids}}},
             {'$group': {'_id': '$driver_number', 'pit_stop_count': {'$sum': 1}}}
         ]))
 
@@ -61,23 +86,18 @@ def get_driver_comparison(session_key):
             item = next((d for d in data_list if d.get('_id') == driver_num or d.get('driver_number') == driver_num), None)
             return item.get(key) if item else default_val
 
-        # --- Assemble Comparison Object ---
-        comparison = {
-            'driver1': {
-                'driver_number': driver1_num,
-                'position': get_driver_stat(positions_data, driver1_num, 'position', 'N/A'),
-                'fastest_lap': get_driver_stat(fastest_laps_data, driver1_num, 'fastest_lap', 'N/A'),
-                'pit_stops': get_driver_stat(pit_stops_data, driver1_num, 'pit_stop_count', 0)
-            },
-            'driver2': {
-                'driver_number': driver2_num,
-                'position': get_driver_stat(positions_data, driver2_num, 'position', 'N/A'),
-                'fastest_lap': get_driver_stat(fastest_laps_data, driver2_num, 'fastest_lap', 'N/A'),
-                'pit_stops': get_driver_stat(pit_stops_data, driver2_num, 'pit_stop_count', 0)
+        # --- Assemble Comparison Object for each driver ---
+        comparison_results = []
+        for driver_num in driver_ids:
+            driver_data = {
+                'driver_number': driver_num,
+                'position': get_driver_stat(positions_data, driver_num, 'position', 'N/A'),
+                'fastest_lap': get_driver_stat(fastest_laps_data, driver_num, 'fastest_lap', 'N/A'),
+                'pit_stops': get_driver_stat(pit_stops_data, driver_num, 'pit_stop_count', 0)
             }
-        }
+            comparison_results.append(driver_data)
         
-        return jsonify(parse_json(comparison))
+        return jsonify(parse_json(comparison_results))
 
     except Exception as e:
         logging.error(f"Error in /api/sessions/{session_key}/compare: {e}")
