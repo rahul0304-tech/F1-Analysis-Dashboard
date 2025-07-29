@@ -35,6 +35,55 @@ def get_status():
     """API endpoint to check if the service is running."""
     return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
 
+# --- NEW TACTICAL ENDPOINT FOR COMPARISON ---
+@app.route('/api/sessions/<int:session_key>/compare')
+def get_driver_comparison(session_key):
+    try:
+        driver1_num = int(request.args.get('driver1'))
+        driver2_num = int(request.args.get('driver2'))
+        
+        drivers_to_compare = [driver1_num, driver2_num]
+        
+        # --- Fetch Data for Both Drivers ---
+        positions_data = list(db.session_results.find({'session_key': session_key, 'driver_number': {'$in': drivers_to_compare}}))
+        fastest_laps_data = list(db.laps.aggregate([
+            {'$match': {'session_key': session_key, 'driver_number': {'$in': drivers_to_compare}, 'lap_duration': {'$ne': None}}},
+            {'$sort': {'lap_duration': 1}},
+            {'$group': {'_id': '$driver_number', 'fastest_lap': {'$first': '$lap_duration'}}}
+        ]))
+        pit_stops_data = list(db.pit_stops.aggregate([
+            {'$match': {'session_key': session_key, 'driver_number': {'$in': drivers_to_compare}}},
+            {'$group': {'_id': '$driver_number', 'pit_stop_count': {'$sum': 1}}}
+        ]))
+
+        # --- Helper to find data for a driver ---
+        def get_driver_stat(data_list, driver_num, key, default_val=None):
+            item = next((d for d in data_list if d.get('_id') == driver_num or d.get('driver_number') == driver_num), None)
+            return item.get(key) if item else default_val
+
+        # --- Assemble Comparison Object ---
+        comparison = {
+            'driver1': {
+                'driver_number': driver1_num,
+                'position': get_driver_stat(positions_data, driver1_num, 'position', 'N/A'),
+                'fastest_lap': get_driver_stat(fastest_laps_data, driver1_num, 'fastest_lap', 'N/A'),
+                'pit_stops': get_driver_stat(pit_stops_data, driver1_num, 'pit_stop_count', 0)
+            },
+            'driver2': {
+                'driver_number': driver2_num,
+                'position': get_driver_stat(positions_data, driver2_num, 'position', 'N/A'),
+                'fastest_lap': get_driver_stat(fastest_laps_data, driver2_num, 'fastest_lap', 'N/A'),
+                'pit_stops': get_driver_stat(pit_stops_data, driver2_num, 'pit_stop_count', 0)
+            }
+        }
+        
+        return jsonify(parse_json(comparison))
+
+    except Exception as e:
+        logging.error(f"Error in /api/sessions/{session_key}/compare: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+
 @app.route('/api/stats/season/<int:year>')
 def get_season_stats(year):
     try:
@@ -111,18 +160,14 @@ def get_session_details(session_key):
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
     try:
-        # THE DEFINITIVE FIX: This pipeline correctly sorts finishers above non-finishers (DNF).
         pipeline = [
             {'$match': {'session_key': session_key}},
-            # 1. Add a field to distinguish finishers from non-finishers
             {'$addFields': {
                 'is_finisher': {
                     '$cond': { 'if': { '$eq': [ "$dnf", False ] }, 'then': 1, 'else': 2 }
                 }
             }},
-            # 2. Sort by finisher status first, then by official position
             {'$sort': {'is_finisher': 1, 'position': 1}},
-            # 3. Join with driver details
             {'$lookup': {
                 'from': 'drivers',
                 'localField': 'driver_number',
@@ -130,7 +175,6 @@ def get_session_positions(session_key):
                 'as': 'driver_info'
             }},
             {'$unwind': '$driver_info'},
-            # 4. Project the final fields
             {'$project': {
                 '_id': 0,
                 'position': '$position',
@@ -140,7 +184,7 @@ def get_session_positions(session_key):
                 'team_color': '$driver_info.team_colour',
                 'laps_completed': '$number_of_laps',
                 'headshot_url': '$driver_info.headshot_url',
-                'dnf': '$dnf' # Pass the DNF status to the frontend
+                'dnf': '$dnf'
             }}
         ]
         positions = list(db.session_results.aggregate(pipeline))
