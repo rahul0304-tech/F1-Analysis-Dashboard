@@ -28,7 +28,7 @@ def parse_json(data):
     """Helper function to convert MongoDB BSON to JSON."""
     return json.loads(json_util.dumps(data))
 
-# --- NEW: Dedicated endpoint for the Comparison Page ---
+# --- Dedicated endpoint for the Comparison Page ---
 @app.route('/api/analysis')
 def get_analysis():
     try:
@@ -40,8 +40,9 @@ def get_analysis():
         
         driver_ids = [int(num) for num in driver_ids_str.split(',')]
         
-        pipeline = []
+        results = []
         if analysis_type == 'career':
+            # Pipeline for wins and podiums
             pipeline = [
                 {'$match': {'driver_number': {'$in': driver_ids}, 'position': {'$ne': None}}},
                 {'$group': {
@@ -53,15 +54,21 @@ def get_analysis():
                     '_id': 0, 'driver_number': '$_id', 'wins': 1, 'podiums': 1
                 }}
             ]
-            results = list(db.session_results.aggregate(pipeline))
-            # Add poles separately as it requires a different condition
+            results_data = list(db.session_results.aggregate(pipeline))
+            
+            # Combine results and add poles
             for driver_id in driver_ids:
+                # Find existing result or create a new one
+                driver_result = next((r for r in results_data if r['driver_number'] == driver_id), {'driver_number': driver_id, 'wins': 0, 'podiums': 0})
+                
+                # CORRECTLY count poles from grid position
                 poles = db.session_results.count_documents({'driver_number': driver_id, 'grid_position': 1})
-                driver_result = next((r for r in results if r['driver_number'] == driver_id), None)
-                if driver_result:
-                    driver_result['poles'] = poles
-                else: # Handle case where driver has poles but no wins/podiums
-                    results.append({'driver_number': driver_id, 'wins': 0, 'podiums': 0, 'poles': poles})
+                driver_result['poles'] = poles
+                
+                # Ensure driver is in the final results list
+                if not any(r['driver_number'] == driver_id for r in results):
+                    results.append(driver_result)
+
 
         elif analysis_type == 'season':
             year = int(request.args.get('year'))
