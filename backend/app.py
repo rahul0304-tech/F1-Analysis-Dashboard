@@ -28,7 +28,22 @@ def parse_json(data):
     """Helper function to convert MongoDB BSON to JSON."""
     return json.loads(json_util.dumps(data))
 
-# --- NEW: Dedicated endpoint for the Records Page ---
+# --- NEW: Endpoint to get available years ---
+@app.route('/api/years')
+def get_available_years():
+    try:
+        # Use distinct to efficiently get all unique years from the sessions collection
+        years = db.sessions.distinct('year')
+        # Sort the years in descending order
+        years.sort(reverse=True)
+        return jsonify(years)
+    except Exception as e:
+        logging.error(f"Error in /api/years: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+
+# --- All other endpoints remain unchanged below ---
+
 @app.route('/api/records')
 def get_records():
     try:
@@ -94,9 +109,6 @@ def get_records():
     except Exception as e:
         logging.error(f"Error in /api/records: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
-
-
-# --- All other endpoints remain unchanged below ---
 
 @app.route('/api/status')
 def get_status():
