@@ -28,13 +28,79 @@ def parse_json(data):
     """Helper function to convert MongoDB BSON to JSON."""
     return json.loads(json_util.dumps(data))
 
-# --- API Endpoints ---
+# --- NEW: Dedicated endpoint for the Records Page ---
+@app.route('/api/records')
+def get_records():
+    try:
+        year_str = request.args.get('year')
+        if not year_str:
+            return jsonify({"error": "year query parameter is required"}), 400
+        
+        year = int(year_str)
+
+        # --- Record 1: Season Champion ---
+        champion_pipeline = [
+            {'$lookup': {'from': 'sessions', 'localField': 'session_key', 'foreignField': '_id', 'as': 'session_info'}},
+            {'$unwind': '$session_info'},
+            {'$match': {'session_info.year': year, 'session_info.session_name': 'Race', 'points': {'$ne': None}}},
+            {'$group': {'_id': '$driver_number', 'total_points': {'$sum': '$points'}}},
+            {'$sort': {'total_points': -1}},
+            {'$limit': 1},
+            {'$lookup': {'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'}},
+            {'$unwind': '$driver_info'}
+        ]
+        champion_data = list(db.session_results.aggregate(champion_pipeline))
+        season_champion = champion_data[0] if champion_data else None
+
+        # --- Record 2: Most Grand Prix Wins ---
+        wins_pipeline = [
+            {'$lookup': {'from': 'sessions', 'localField': 'session_key', 'foreignField': '_id', 'as': 'session_info'}},
+            {'$unwind': '$session_info'},
+            {'$match': {'session_info.year': year, 'session_info.session_name': 'Race', 'position': 1}},
+            {'$group': {'_id': '$driver_number', 'wins': {'$sum': 1}}},
+            {'$sort': {'wins': -1}},
+            {'$limit': 1},
+            {'$lookup': {'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'}},
+            {'$unwind': '$driver_info'}
+        ]
+        most_wins_data = list(db.session_results.aggregate(wins_pipeline))
+        most_wins = most_wins_data[0] if most_wins_data else None
+
+        # --- Record 3: Fastest Lap of the Season ---
+        fastest_lap_pipeline = [
+            {'$lookup': {'from': 'sessions', 'localField': 'session_key', 'foreignField': '_id', 'as': 'session_info'}},
+            {'$unwind': '$session_info'},
+            {'$match': {'session_info.year': year, 'lap_duration': {'$ne': None}}},
+            {'$sort': {'lap_duration': 1}},
+            {'$limit': 1},
+            {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
+            {'$unwind': '$driver_info'},
+            {'$lookup': {'from': 'meetings', 'localField': 'session_info.meeting_key', 'foreignField': '_id', 'as': 'meeting_info'}},
+            {'$unwind': '$meeting_info'}
+        ]
+        fastest_lap_data = list(db.laps.aggregate(fastest_lap_pipeline))
+        fastest_lap = fastest_lap_data[0] if fastest_lap_data else None
+
+        response = {
+            'year': year,
+            'season_champion': season_champion,
+            'most_wins': most_wins,
+            'fastest_lap': fastest_lap
+        }
+        return jsonify(parse_json(response))
+
+    except (ValueError, TypeError):
+        return jsonify({"error": "year must be a valid integer"}), 400
+    except Exception as e:
+        logging.error(f"Error in /api/records: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+
+# --- All other endpoints remain unchanged below ---
 
 @app.route('/api/status')
 def get_status():
     return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
-
-# --- Meetings Endpoints ---
 
 @app.route('/api/meetings')
 def get_all_meetings():
@@ -98,8 +164,6 @@ def get_meeting_details_consolidated(meeting_key):
     except Exception as e:
         logging.error(f"Error in /api/meetings/{meeting_key}/details: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
-
-# --- Sessions Endpoints ---
 
 @app.route('/api/meetings/<int:meeting_key>/sessions')
 def get_sessions_for_meeting(meeting_key):
@@ -196,7 +260,6 @@ def get_session_positions(session_key):
         logging.error(f"Error in /api/sessions/{session_key}/positions: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
-# --- MODIFIED: Laps endpoint now returns complete data ---
 @app.route('/api/laps')
 def get_laps():
     try:
@@ -209,7 +272,6 @@ def get_laps():
         
         match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
         
-        # Base pipeline to get all lap details
         pipeline = [
             {'$match': match_stage},
             {'$lookup': {
@@ -220,34 +282,21 @@ def get_laps():
             }},
             {'$unwind': '$driver_info'},
             {'$project': {
-                '_id': 1,
-                'session_key': 1,
-                'driver_number': 1,
-                'lap_number': 1,
-                'lap_duration': 1,
-                'stint': 1,
-                'is_pit_out_lap': 1,
-                'tyre_compound': 1,
-                'full_name': '$driver_info.full_name',
-                'team_name': '$driver_info.team_name',
+                '_id': 1, 'session_key': 1, 'driver_number': 1, 'lap_number': 1, 'lap_duration': 1,
+                'stint': 1, 'is_pit_out_lap': 1, 'tyre_compound': 1,
+                'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name',
                 'team_color': '$driver_info.team_colour'
             }}
         ]
 
         if sort_order == 'fastest':
-            # Append stages for fastest lap calculation
             pipeline.extend([
                 {'$sort': {'lap_duration': 1}},
-                {'$group': {
-                    '_id': '$driver_number',
-                    'fastest_lap_doc': {'$first': '$$ROOT'}
-                }},
+                {'$group': {'_id': '$driver_number', 'fastest_lap_doc': {'$first': '$$ROOT'}}},
                 {'$replaceRoot': {'newRoot': '$fastest_lap_doc'}},
-                {'$sort': {'lap_duration': 1}},
-                {'$limit': 10}
+                {'$sort': {'lap_duration': 1}}, {'$limit': 10}
             ])
         else:
-            # Default sort for all laps
             pipeline.append({'$sort': {'lap_number': 1, 'lap_duration': 1}})
 
         laps = list(db.laps.aggregate(pipeline))
