@@ -28,7 +28,7 @@ def parse_json(data):
     """Helper function to convert MongoDB BSON to JSON."""
     return json.loads(json_util.dumps(data))
 
-# --- NEW POWERFUL ANALYSIS ENDPOINT ---
+# --- THE DEFINITIVE, POWERFUL ANALYSIS ENDPOINT ---
 @app.route('/api/analysis')
 def get_analysis():
     try:
@@ -57,36 +57,42 @@ def get_analysis():
         # --- Season Stats Analysis ---
         elif analysis_type == 'season':
             year_str = request.args.get('year')
-            if not year_str:
-                return jsonify({"error": "year parameter is required for season analysis"}), 400
+            if not year_str: return jsonify({"error": "year parameter is required"}), 400
             year = int(year_str)
             
             results = []
             for driver_id in driver_ids:
-                wins = db.session_results.count_documents({'driver_number': driver_id, 'position': 1, 'session_name': 'Race', 'year': year})
-                podiums = db.session_results.count_documents({'driver_number': driver_id, 'position': {'$lte': 3}, 'session_name': 'Race', 'year': year})
-                results.append({
-                    'driver_number': driver_id,
-                    'year': year,
-                    'wins': wins,
-                    'podiums': podiums
-                })
+                # Find all meetings in the specified year
+                meetings_in_year = list(db.meetings.find({'year': year}, {'_id': 1}))
+                meeting_keys = [m['_id'] for m in meetings_in_year]
+                
+                # Find all sessions within those meetings
+                sessions_in_meetings = list(db.sessions.find({'meeting_key': {'$in': meeting_keys}}, {'_id': 1}))
+                session_keys = [s['_id'] for s in sessions_in_meetings]
+
+                wins = db.session_results.count_documents({'driver_number': driver_id, 'position': 1, 'session_name': 'Race', 'session_key': {'$in': session_keys}})
+                podiums = db.session_results.count_documents({'driver_number': driver_id, 'position': {'$lte': 3}, 'session_name': 'Race', 'session_key': {'$in': session_keys}})
+                results.append({ 'driver_number': driver_id, 'year': year, 'wins': wins, 'podiums': podiums })
             return jsonify(parse_json(results))
         
         # --- Track Performance Analysis ---
         elif analysis_type == 'track':
             circuit_key_str = request.args.get('circuit_key')
-            if not circuit_key_str:
-                return jsonify({"error": "circuit_key parameter is required for track analysis"}), 400
+            if not circuit_key_str: return jsonify({"error": "circuit_key is required"}), 400
             circuit_key = int(circuit_key_str)
 
             results = []
             for driver_id in driver_ids:
                 pipeline = [
-                    {'$match': {'driver_number': driver_id, 'circuit_key': circuit_key, 'lap_duration': {'$ne': None}}},
+                    {'$match': {'driver_number': driver_id, 'lap_duration': {'$ne': None}}},
+                    {'$lookup': {'from': 'sessions', 'localField': 'session_key', 'foreignField': '_id', 'as': 'session_info'}},
+                    {'$unwind': '$session_info'},
+                    {'$lookup': {'from': 'meetings', 'localField': 'session_info.meeting_key', 'foreignField': '_id', 'as': 'meeting_info'}},
+                    {'$unwind': '$meeting_info'},
+                    {'$match': {'meeting_info.circuit_key': circuit_key}},
                     {'$sort': {'lap_duration': 1}},
                     {'$limit': 1},
-                    {'$project': {'_id': 0, 'fastest_lap': '$lap_duration', 'year': '$year'}}
+                    {'$project': {'_id': 0, 'fastest_lap': '$lap_duration', 'year': '$meeting_info.year'}}
                 ]
                 best_lap = list(db.laps.aggregate(pipeline))
                 results.append({
@@ -97,101 +103,61 @@ def get_analysis():
             return jsonify(parse_json(results))
 
         else:
-            return jsonify({"error": "Invalid analysis type specified"}), 400
+            return jsonify({"error": "Invalid analysis type"}), 400
 
     except Exception as e:
         logging.error(f"Error in /api/analysis: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
 
 
-# ... (rest of your existing app.py code)
-# I have omitted the other endpoints for brevity. You should add the new /api/analysis endpoint to your existing file.
-
+# ... (rest of your existing app.py code) ...
+# I have omitted the other endpoints for brevity. You only need to add/replace the /api/analysis endpoint.
 @app.route('/api/status')
 def get_status():
     return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
-
 @app.route('/api/stats/season/<int:year>')
 def get_season_stats(year):
     total_sessions = db.sessions.count_documents({'year': year})
-    pipeline = [
-        {'$match': {'year': year}},
-        {'$lookup': {'from': 'session_results', 'localField': '_id', 'foreignField': 'session_key', 'as': 'results'}},
-        {'$unwind': '$results'},
-        {'$group': {'_id': '$results.driver_number'}}
-    ]
+    pipeline = [{'$match': {'year': year}},{'$lookup': {'from': 'session_results','localField': '_id','foreignField': 'session_key','as': 'results'}},{'$unwind': '$results'},{'$group': {'_id': '$results.driver_number'}}]
     drivers = list(db.sessions.aggregate(pipeline))
     total_drivers = len(drivers)
     return jsonify({'year': year, 'total_sessions': total_sessions, 'total_drivers': total_drivers})
-
 @app.route('/api/meetings')
 def get_all_meetings():
     meetings = list(db.meetings.find().sort([('year', -1), ('date_start', -1)]))
     return jsonify(parse_json(meetings))
-
 @app.route('/api/meetings/<int:meeting_key>')
 def get_meeting_details(meeting_key):
     meeting = db.meetings.find_one({'_id': meeting_key})
     return jsonify(parse_json(meeting)) if meeting else (jsonify({"error": "Meeting not found"}), 404)
-
 @app.route('/api/meetings/<int:meeting_key>/sessions')
 def get_sessions_for_meeting(meeting_key):
     sessions = list(db.sessions.find({'meeting_key': meeting_key}).sort('date_start', -1))
     return jsonify(parse_json(sessions))
-
 @app.route('/api/sessions/<int:session_key>')
 def get_session_details(session_key):
     session = db.sessions.find_one({'_id': session_key})
     return jsonify(parse_json(session)) if session else (jsonify({"error": "Session not found"}), 404)
-
 @app.route('/api/sessions/<int:session_key>/positions')
 def get_session_positions(session_key):
-    pipeline = [
-        {'$match': {'session_key': session_key}},
-        {'$addFields': {'is_finisher': {'$cond': { 'if': { '$eq': [ "$dnf", False ] }, 'then': 1, 'else': 2 }}}},
-        {'$sort': {'is_finisher': 1, 'position': 1}},
-        {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
-        {'$unwind': '$driver_info'},
-        {'$project': {
-            '_id': 0, 'position': '$position', 'driver_number': '$driver_number',
-            'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name',
-            'team_color': '$driver_info.team_colour', 'laps_completed': '$number_of_laps',
-            'headshot_url': '$driver_info.headshot_url', 'dnf': '$dnf'
-        }}
-    ]
+    pipeline = [{'$match': {'session_key': session_key}},{'$addFields': {'is_finisher': {'$cond': { 'if': { '$eq': [ "$dnf", False ] }, 'then': 1, 'else': 2 }}}},{'$sort': {'is_finisher': 1, 'position': 1}},{'$lookup': {'from': 'drivers','localField': 'driver_number','foreignField': '_id','as': 'driver_info'}},{'$unwind': '$driver_info'},{'$project': {'_id': 0,'position': '$position','driver_number': '$driver_number','full_name': '$driver_info.full_name','team_name': '$driver_info.team_name','team_color': '$driver_info.team_colour','laps_completed': '$number_of_laps','headshot_url': '$driver_info.headshot_url','dnf': '$dnf'}}]
     positions = list(db.session_results.aggregate(pipeline))
     return jsonify(parse_json(positions))
-
 @app.route('/api/laps')
 def get_laps():
     session_key = int(request.args.get('session_key'))
     sort_order = request.args.get('sort')
     match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
     if sort_order == 'fastest':
-        pipeline = [
-            {'$match': match_stage}, {'$sort': {'lap_duration': 1}},
-            {'$group': {'_id': '$driver_number', 'fastest_lap_duration': {'$first': '$lap_duration'}, 'lap_number': {'$first': '$lap_number'}}},
-            {'$sort': {'fastest_lap_duration': 1}}, {'$limit': 10},
-            {'$lookup': {'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'}},
-            {'$unwind': '$driver_info'},
-            {'$project': {'_id': 0, 'driver_number': '$_id', 'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name', 'team_color': '$driver_info.team_colour', 'lap_duration': '$fastest_lap_duration', 'lap_number': '$lap_number'}}
-        ]
+        pipeline = [{'$match': match_stage}, {'$sort': {'lap_duration': 1}},{'$group': {'_id': '$driver_number','fastest_lap_duration': {'$first': '$lap_duration'},'lap_number': {'$first': '$lap_number'}}},{'$sort': {'fastest_lap_duration': 1}}, {'$limit': 10},{'$lookup': {'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'}},{'$unwind': '$driver_info'},{'$project': {'_id': 0, 'driver_number': '$_id', 'full_name': '$driver_info.full_name', 'team_name': '$driver_info.team_name', 'team_color': '$driver_info.team_colour', 'lap_duration': '$fastest_lap_duration', 'lap_number': '$lap_number'}}]
     else:
-        pipeline = [
-            {'$match': match_stage},
-            {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
-            {'$unwind': '$driver_info'},
-            {'$addFields': {'full_name': '$driver_info.full_name', 'team_color': '$driver_info.team_colour', 'team_name': '$driver_info.team_name'}},
-            {'$project': {'driver_info': 0}}, {'$sort': {'lap_number': 1}}
-        ]
+        pipeline = [{'$match': match_stage},{'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},{'$unwind': '$driver_info'},{'$addFields': {'full_name': '$driver_info.full_name', 'team_color': '$driver_info.team_colour', 'team_name': '$driver_info.team_name'}},{'$project': {'driver_info': 0}}, {'$sort': {'lap_number': 1}}]
     laps = list(db.laps.aggregate(pipeline))
     return jsonify(parse_json(laps))
-
 @app.route('/api/drivers/all')
 def get_all_drivers():
     drivers = list(db.drivers.find().sort('full_name', 1))
     return jsonify(parse_json(drivers))
-
 @app.route('/api/drivers')
 def get_drivers_by_session():
     session_key = int(request.args.get('session_key'))
@@ -200,6 +166,5 @@ def get_drivers_by_session():
         distinct_driver_nums = db.laps.distinct('driver_number', {'session_key': session_key})
     drivers = list(db.drivers.find({'_id': {'$in': distinct_driver_nums}}).sort('team_name', 1))
     return jsonify(parse_json(drivers))
-
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
