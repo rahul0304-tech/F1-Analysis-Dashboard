@@ -227,7 +227,7 @@ def get_laps():
                 'lap_duration': 1,
                 'stint': 1,
                 'is_pit_out_lap': 1,
-                'tyre_compound': 1, # This is a new field from the collection
+                'tyre_compound': 1,
                 'full_name': '$driver_info.full_name',
                 'team_name': '$driver_info.team_name',
                 'team_color': '$driver_info.team_colour'
