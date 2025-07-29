@@ -28,21 +28,95 @@ def parse_json(data):
     """Helper function to convert MongoDB BSON to JSON."""
     return json.loads(json_util.dumps(data))
 
-# --- NEW: Endpoint to get available years ---
+# --- NEW: Dedicated endpoint for the Comparison Page ---
+@app.route('/api/analysis')
+def get_analysis():
+    try:
+        analysis_type = request.args.get('type')
+        driver_ids_str = request.args.get('drivers')
+        
+        if not analysis_type or not driver_ids_str:
+            return jsonify({"error": "type and drivers query parameters are required"}), 400
+        
+        driver_ids = [int(num) for num in driver_ids_str.split(',')]
+        
+        pipeline = []
+        if analysis_type == 'career':
+            pipeline = [
+                {'$match': {'driver_number': {'$in': driver_ids}, 'position': {'$ne': None}}},
+                {'$group': {
+                    '_id': '$driver_number',
+                    'wins': {'$sum': {'$cond': [{'$eq': ['$position', 1]}, 1, 0]}},
+                    'podiums': {'$sum': {'$cond': [{'$lte': ['$position', 3]}, 1, 0]}},
+                }},
+                {'$project': {
+                    '_id': 0, 'driver_number': '$_id', 'wins': 1, 'podiums': 1
+                }}
+            ]
+            results = list(db.session_results.aggregate(pipeline))
+            # Add poles separately as it requires a different condition
+            for driver_id in driver_ids:
+                poles = db.session_results.count_documents({'driver_number': driver_id, 'grid_position': 1})
+                driver_result = next((r for r in results if r['driver_number'] == driver_id), None)
+                if driver_result:
+                    driver_result['poles'] = poles
+                else: # Handle case where driver has poles but no wins/podiums
+                    results.append({'driver_number': driver_id, 'wins': 0, 'podiums': 0, 'poles': poles})
+
+        elif analysis_type == 'season':
+            year = int(request.args.get('year'))
+            pipeline = [
+                {'$lookup': {'from': 'sessions', 'localField': 'session_key', 'foreignField': '_id', 'as': 'session_info'}},
+                {'$unwind': '$session_info'},
+                {'$match': {'driver_number': {'$in': driver_ids}, 'session_info.year': year, 'position': {'$ne': None}}},
+                {'$group': {
+                    '_id': '$driver_number',
+                    'wins': {'$sum': {'$cond': [{'$eq': ['$position', 1]}, 1, 0]}},
+                    'podiums': {'$sum': {'$cond': [{'$lte': ['$position', 3]}, 1, 0]}}
+                }},
+                {'$project': {'_id': 0, 'driver_number': '$_id', 'wins': 1, 'podiums': 1}}
+            ]
+            results = list(db.session_results.aggregate(pipeline))
+
+        elif analysis_type == 'track':
+            circuit_key = int(request.args.get('circuit_key'))
+            pipeline = [
+                {'$lookup': {'from': 'sessions', 'localField': 'session_key', 'foreignField': '_id', 'as': 'session_info'}},
+                {'$unwind': '$session_info'},
+                {'$lookup': {'from': 'meetings', 'localField': 'session_info.meeting_key', 'foreignField': '_id', 'as': 'meeting_info'}},
+                {'$unwind': '$meeting_info'},
+                {'$match': {'driver_number': {'$in': driver_ids}, 'meeting_info.circuit_key': circuit_key, 'lap_duration': {'$ne': None}}},
+                {'$sort': {'lap_duration': 1}},
+                {'$group': {
+                    '_id': '$driver_number',
+                    'best_lap_time': {'$first': {'fastest_lap': '$lap_duration', 'year': '$session_info.year'}}
+                }},
+                 {'$project': {'_id': 0, 'driver_number': '$_id', 'best_lap_time': 1}}
+            ]
+            results = list(db.laps.aggregate(pipeline))
+        else:
+            return jsonify({"error": "Invalid analysis type"}), 400
+
+        return jsonify(parse_json(results))
+    except Exception as e:
+        logging.error(f"Error in /api/analysis: {e}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+# --- All other endpoints remain unchanged below ---
+
+@app.route('/api/status')
+def get_status():
+    return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
+    
 @app.route('/api/years')
 def get_available_years():
     try:
-        # Use distinct to efficiently get all unique years from the sessions collection
         years = db.sessions.distinct('year')
-        # Sort the years in descending order
         years.sort(reverse=True)
         return jsonify(years)
     except Exception as e:
         logging.error(f"Error in /api/years: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
-
-
-# --- All other endpoints remain unchanged below ---
 
 @app.route('/api/records')
 def get_records():
@@ -50,10 +124,7 @@ def get_records():
         year_str = request.args.get('year')
         if not year_str:
             return jsonify({"error": "year query parameter is required"}), 400
-        
         year = int(year_str)
-
-        # --- Record 1: Season Champion ---
         champion_pipeline = [
             {'$lookup': {'from': 'sessions', 'localField': 'session_key', 'foreignField': '_id', 'as': 'session_info'}},
             {'$unwind': '$session_info'},
@@ -66,8 +137,6 @@ def get_records():
         ]
         champion_data = list(db.session_results.aggregate(champion_pipeline))
         season_champion = champion_data[0] if champion_data else None
-
-        # --- Record 2: Most Grand Prix Wins ---
         wins_pipeline = [
             {'$lookup': {'from': 'sessions', 'localField': 'session_key', 'foreignField': '_id', 'as': 'session_info'}},
             {'$unwind': '$session_info'},
@@ -80,8 +149,6 @@ def get_records():
         ]
         most_wins_data = list(db.session_results.aggregate(wins_pipeline))
         most_wins = most_wins_data[0] if most_wins_data else None
-
-        # --- Record 3: Fastest Lap of the Season ---
         fastest_lap_pipeline = [
             {'$lookup': {'from': 'sessions', 'localField': 'session_key', 'foreignField': '_id', 'as': 'session_info'}},
             {'$unwind': '$session_info'},
@@ -95,24 +162,16 @@ def get_records():
         ]
         fastest_lap_data = list(db.laps.aggregate(fastest_lap_pipeline))
         fastest_lap = fastest_lap_data[0] if fastest_lap_data else None
-
         response = {
-            'year': year,
-            'season_champion': season_champion,
-            'most_wins': most_wins,
-            'fastest_lap': fastest_lap
+            'year': year, 'season_champion': season_champion,
+            'most_wins': most_wins, 'fastest_lap': fastest_lap
         }
         return jsonify(parse_json(response))
-
     except (ValueError, TypeError):
         return jsonify({"error": "year must be a valid integer"}), 400
     except Exception as e:
         logging.error(f"Error in /api/records: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
-
-@app.route('/api/status')
-def get_status():
-    return jsonify({'status': 'ok', 'message': 'F1 API is running.'})
 
 @app.route('/api/meetings')
 def get_all_meetings():
@@ -149,15 +208,12 @@ def get_meeting_details_consolidated(meeting_key):
         meeting = db.meetings.find_one({'_id': meeting_key})
         if not meeting:
             return jsonify({"error": "Meeting not found"}), 404
-        
         sessions = list(db.sessions.find({'meeting_key': meeting_key}).sort('date_start', -1))
-        
         winner = None
         race_session = next((s for s in sessions if s['session_name'].lower() == 'race'), None)
         if race_session:
             pipeline = [
-                {'$match': {'session_key': race_session['_id'], 'position': 1}},
-                {'$limit': 1},
+                {'$match': {'session_key': race_session['_id'], 'position': 1}}, {'$limit': 1},
                 {'$lookup': {'from': 'drivers', 'localField': 'driver_number', 'foreignField': '_id', 'as': 'driver_info'}},
                 {'$unwind': '$driver_info'},
                 {'$project': {
@@ -170,7 +226,6 @@ def get_meeting_details_consolidated(meeting_key):
             winner_data = list(db.session_results.aggregate(pipeline))
             if winner_data:
                 winner = winner_data[0]
-        
         response = {'meeting_details': meeting, 'sessions': sessions, 'winner': winner}
         return jsonify(parse_json(response))
     except Exception as e:
@@ -204,9 +259,7 @@ def get_session_details_consolidated(session_key):
         session = db.sessions.find_one({'_id': session_key})
         if not session:
             return jsonify({"error": "Session not found"}), 404
-        
         meeting = db.meetings.find_one({'_id': session['meeting_key']})
-        
         positions_pipeline = [
             {'$match': {'session_key': session_key}},
             {'$addFields': {'is_finisher': {'$cond': {'if': {'$eq': ["$dnf", False]}, 'then': 1, 'else': 2}}}},
@@ -221,7 +274,6 @@ def get_session_details_consolidated(session_key):
             }}
         ]
         positions = list(db.session_results.aggregate(positions_pipeline))
-        
         laps_pipeline = [
             {'$match': {'session_key': session_key, 'lap_duration': {'$ne': None}}},
             {'$sort': {'lap_duration': 1}},
@@ -229,8 +281,7 @@ def get_session_details_consolidated(session_key):
                 '_id': '$driver_number', 'fastest_lap_duration': {'$first': '$lap_duration'},
                 'lap_number': {'$first': '$lap_number'}
             }},
-            {'$sort': {'fastest_lap_duration': 1}},
-            {'$limit': 10},
+            {'$sort': {'fastest_lap_duration': 1}}, {'$limit': 10},
             {'$lookup': {'from': 'drivers', 'localField': '_id', 'foreignField': '_id', 'as': 'driver_info'}},
             {'$unwind': '$driver_info'},
             {'$project': {
@@ -240,7 +291,6 @@ def get_session_details_consolidated(session_key):
             }}
         ]
         fastest_laps = list(db.laps.aggregate(laps_pipeline))
-        
         response = {
             'session': session, 'meeting': meeting,
             'positions': positions, 'fastest_laps': fastest_laps
@@ -278,19 +328,14 @@ def get_laps():
         session_key_str = request.args.get('session_key')
         if not session_key_str:
             return jsonify({"error": "session_key query parameter is required"}), 400
-        
         session_key = int(session_key_str)
         sort_order = request.args.get('sort')
-        
         match_stage = {'session_key': session_key, 'lap_duration': {'$ne': None}}
-        
         pipeline = [
             {'$match': match_stage},
             {'$lookup': {
-                'from': 'drivers',
-                'localField': 'driver_number',
-                'foreignField': '_id',
-                'as': 'driver_info'
+                'from': 'drivers', 'localField': 'driver_number',
+                'foreignField': '_id', 'as': 'driver_info'
             }},
             {'$unwind': '$driver_info'},
             {'$project': {
@@ -300,7 +345,6 @@ def get_laps():
                 'team_color': '$driver_info.team_colour'
             }}
         ]
-
         if sort_order == 'fastest':
             pipeline.extend([
                 {'$sort': {'lap_duration': 1}},
@@ -310,7 +354,6 @@ def get_laps():
             ])
         else:
             pipeline.append({'$sort': {'lap_number': 1, 'lap_duration': 1}})
-
         laps = list(db.laps.aggregate(pipeline))
         return jsonify(parse_json(laps))
     except (ValueError, TypeError):
@@ -350,20 +393,16 @@ def get_season_stats(year):
         pipeline = [
             {'$match': {'year': year}},
             {'$lookup': {
-                'from': 'session_results',
-                'localField': '_id',
-                'foreignField': 'session_key',
-                'as': 'results'
+                'from': 'session_results', 'localField': '_id',
+                'foreignField': 'session_key', 'as': 'results'
             }},
             {'$unwind': '$results'},
             {'$group': {'_id': '$results.driver_number'}}
         ]
         drivers = list(db.sessions.aggregate(pipeline))
         total_drivers = len(drivers)
-
         return jsonify({
-            'year': year,
-            'total_sessions': total_sessions,
+            'year': year, 'total_sessions': total_sessions,
             'total_drivers': total_drivers
         })
     except Exception as e:
@@ -376,11 +415,9 @@ def get_driver_stats(driver_number):
         race_sessions = db.sessions.find({'session_name': 'Race'}, {'_id': 1})
         race_session_keys = [s['_id'] for s in race_sessions]
         wins = db.session_results.count_documents({
-            'driver_number': driver_number,
-            'position': 1,
+            'driver_number': driver_number, 'position': 1,
             'session_key': {'$in': race_session_keys}
         })
-        
         championship_pipeline = [
             {'$lookup': {
                 'from': 'sessions', 'localField': 'session_key',
@@ -402,10 +439,8 @@ def get_driver_stats(driver_number):
         ]
         championship_result = list(db.session_results.aggregate(championship_pipeline))
         championships = championship_result[0]['count'] if championship_result else 0
-
         stats = {
-            'driver_number': driver_number,
-            'grand_prix_victories': wins,
+            'driver_number': driver_number, 'grand_prix_victories': wins,
             'championships_won': championships
         }
         return jsonify(parse_json(stats))
@@ -419,9 +454,7 @@ def get_driver_comparison(session_key):
         driver_ids_str = request.args.get('drivers')
         if not driver_ids_str:
             return jsonify({"error": "drivers query parameter is required"}), 400
-        
         driver_ids = [int(num) for num in driver_ids_str.split(',')]
-        
         positions_data = list(db.session_results.find({'session_key': session_key, 'driver_number': {'$in': driver_ids}}))
         fastest_laps_data = list(db.laps.aggregate([
             {'$match': {'session_key': session_key, 'driver_number': {'$in': driver_ids}, 'lap_duration': {'$ne': None}}},
@@ -432,11 +465,9 @@ def get_driver_comparison(session_key):
             {'$match': {'session_key': session_key, 'driver_number': {'$in': driver_ids}}},
             {'$group': {'_id': '$driver_number', 'pit_stop_count': {'$sum': 1}}}
         ]))
-
         def get_driver_stat(data_list, driver_num, key, default_val=None):
             item = next((d for d in data_list if d.get('_id') == driver_num or d.get('driver_number') == driver_num), None)
             return item.get(key) if item else default_val
-
         comparison_results = []
         for driver_num in driver_ids:
             driver_data = {
@@ -446,13 +477,10 @@ def get_driver_comparison(session_key):
                 'pit_stops': get_driver_stat(pit_stops_data, driver_num, 'pit_stop_count', 0)
             }
             comparison_results.append(driver_data)
-        
         return jsonify(parse_json(comparison_results))
-
     except Exception as e:
         logging.error(f"Error in /api/sessions/{session_key}/compare: {e}")
         return jsonify({"error": "An internal server error occurred"}), 500
-
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
