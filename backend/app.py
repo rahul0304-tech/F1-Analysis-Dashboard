@@ -292,21 +292,42 @@ def get_season_stats(year):
 @app.route('/api/drivers/<int:driver_number>/stats')
 def get_driver_stats(driver_number):
     try:
-        # Step 1: Find all session keys that are actual "Race" events.
+        # --- Calculate Grand Prix Wins ---
         race_sessions = db.sessions.find({'session_name': 'Race'}, {'_id': 1})
         race_session_keys = [s['_id'] for s in race_sessions]
-
-        # Step 2: Count wins only from those race sessions.
         wins = db.session_results.count_documents({
             'driver_number': driver_number,
             'position': 1,
-            'session_key': {'$in': race_session_keys} # Use the list of race keys
+            'session_key': {'$in': race_session_keys}
         })
         
+        # --- Calculate Championships ---
+        championship_pipeline = [
+            {'$lookup': {
+                'from': 'sessions', 'localField': 'session_key',
+                'foreignField': '_id', 'as': 'session_info'
+            }},
+            {'$unwind': '$session_info'},
+            {'$match': {'session_info.session_name': 'Race', 'points': {'$ne': None}}},
+            {'$group': {
+                '_id': {'year': '$session_info.year', 'driver_number': '$driver_number'},
+                'total_points': {'$sum': '$points'}
+            }},
+            {'$sort': {'_id.year': 1, 'total_points': -1}},
+            {'$group': {
+                '_id': '$_id.year',
+                'champion_driver': {'$first': '$_id.driver_number'}
+            }},
+            {'$match': {'champion_driver': driver_number}},
+            {'$count': 'count'}
+        ]
+        championship_result = list(db.session_results.aggregate(championship_pipeline))
+        championships = championship_result[0]['count'] if championship_result else 0
+
         stats = {
             'driver_number': driver_number,
             'grand_prix_victories': wins,
-            'championships_won': 0 # This remains a placeholder
+            'championships_won': championships
         }
         return jsonify(parse_json(stats))
     except Exception as e:
