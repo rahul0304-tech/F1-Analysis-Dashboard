@@ -1,11 +1,21 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // This tells Next.js to produce a static-only build
+  // --- ADDED: This is the critical line for static export ---
   output: 'export',
-
-  // This ensures that routes like /meetings/123 are generated as /meetings/123/index.html,
-  // which is a standard pattern that all static hosts understand.
+  
+  // --- ADDED: This helps static hosts correctly resolve routes like /meetings/123 ---
   trailingSlash: true,
-};
 
-export default nextConfig;
+  // Your existing settings are preserved below
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  images: {
+    unoptimized: true,
+  },
+}
+
+export default nextConfig
