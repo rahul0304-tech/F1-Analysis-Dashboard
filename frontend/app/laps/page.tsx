@@ -1,13 +1,13 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card"
+import { Badge } from "../../components/ui/badge"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select"
+import { Button } from "../../components/ui/button"
 import { Timer, TrendingUp, Award, Download, Filter } from "lucide-react"
 import { useState, useMemo } from "react"
-import { useF1Data } from "@/hooks/use-f1-data"
-import { type Lap } from "@/lib/api"
+import { useF1Data } from "../../hooks/use-f1-data"
+import { type Lap } from "../../lib/api"
 
 export default function LapsPage() {
   const {
