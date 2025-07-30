@@ -1,11 +1,11 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select"
-import { Avatar, AvatarFallback, AvatarImage } from "../../components/ui/avatar"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Trophy, Crown, Zap } from "lucide-react"
 import { useState, useEffect } from "react"
-import { f1Api, type RecordsResponse } from "../../lib/api"
+import { f1Api, type RecordsResponse } from "@/lib/api"
 import Link from "next/link"
 
 const formatLapTime = (seconds: number) => {
