@@ -1,13 +1,13 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card"
+import { Button } from "../../../components/ui/button"
+import { Badge } from "../../../components/ui/badge"
 import { Calendar, Clock, Flag, Users, ArrowLeft, Car, Gauge, Zap, Trophy } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
-import { f1Api, type Session, type Meeting, type Position, type Lap } from "@/lib/api"
+import { f1Api, type Session, type Meeting, type Position, type Lap } from "../../../lib/api"
 
 export default function SessionDetailPage() {
   const params = useParams()
