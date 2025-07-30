@@ -1,368 +1,221 @@
 "use client"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Button } from "@/components/ui/button"
-import * as Lucide from "lucide-react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { Users, Trophy, Search, X } from "lucide-react"
 import { useState, useEffect, useMemo } from "react"
-import { useF1Data } from "@/hooks/use-f1-data"
-import { 
-  f1Api, 
-  type Driver, 
-  type Meeting, 
-  type Session,
-  type ComparisonLapsResponse,
-  type ComparisonLap
-} from "@/lib/api"
-import { DndContext, useDraggable, useDroppable, DragEndEvent } from '@dnd-kit/core';
-import { Line } from "react-chartjs-2"
-import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, type ChartOptions } from 'chart.js';
+import { f1Api, type Driver, type DriverStats } from "@/lib/api"
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
-
-// --- Type Definitions ---
-interface ComparisonColumn {
-    id: string;
-    driver: Driver | null;
-    year: number | null;
-    meetingKey: number | null;
-    sessionKey: number | null;
-}
-
-interface CalculatedStats {
-    columnId: string;
-    fastestLap: number | null;
-    averageLap: number | null;
-    consistency: number | null; // Standard Deviation
-}
-
-// --- Helper Functions & Components ---
-const formatLapTime = (seconds: number | null) => {
-    if (seconds === null) return "N/A";
-    const minutes = Math.floor(seconds / 60)
-    const remainingSeconds = (seconds % 60).toFixed(3)
-    return `${minutes}:${remainingSeconds.padStart(6, "0")}`
-}
-
-const DraggableDriver = ({ driver }: { driver: Driver }) => {
-  const { attributes, listeners, setNodeRef } = useDraggable({ id: driver._id });
-  return (
-    <div ref={setNodeRef} {...listeners} {...attributes} className="flex items-center gap-2 p-2 bg-white/10 rounded-lg cursor-grab active:cursor-grabbing">
-      <Avatar className="w-8 h-8"><AvatarImage src={driver.headshot_url} /><AvatarFallback>{driver.full_name.slice(0,1)}</AvatarFallback></Avatar>
-      <p className="text-sm font-semibold text-white truncate">{driver.full_name}</p>
-    </div>
-  );
+// --- Helper Components ---
+const CountryFlag = ({ countryCode }: { countryCode: string }) => {
+    const flags: { [key: string]: string } = {
+      NED: "🇳🇱", GBR: "🇬🇧", MON: "🇲🇨", AUS: "🇦🇺", ESP: "🇪🇸", MEX: "🇲🇽", 
+      FRA: "🇫�", JPN: "🇯🇵", GER: "🇩🇪", CAN: "🇨🇦", FIN: "🇫🇮", DEN: "🇩🇰", 
+      THA: "🇹🇭", CHN: "🇨🇳", ITA: "🇮🇹", SUI: "🇨🇭", USA: "🇺🇸",
+    }
+    return <span className="text-2xl">{flags[countryCode] || "🏁"}</span>
 };
 
-// --- Main Page Component ---
-export default function ComparisonPage() {
-  const { allDrivers, meetings, loading: initialLoading } = useF1Data();
-  
-  const [columns, setColumns] = useState<ComparisonColumn[]>([
-    { id: crypto.randomUUID(), driver: null, year: null, meetingKey: null, sessionKey: null }
-  ]);
-  const [comparisonData, setComparisonData] = useState<ComparisonLapsResponse | null>(null);
-  const [isComparing, setIsComparing] = useState(false);
-  const [chartType, setChartType] = useState<'lap_time' | 'sector_1' | 'sector_2' | 'sector_3'>('lap_time');
-
-  const addColumn = () => {
-    if (columns.length < 4) {
-      setColumns(prev => [...prev, { id: crypto.randomUUID(), driver: null, year: null, meetingKey: null, sessionKey: null }]);
-    }
-  };
-
-  const removeColumn = (id: string) => {
-    if (columns.length === 1) {
-        setColumns([{ id: crypto.randomUUID(), driver: null, year: null, meetingKey: null, sessionKey: null }]);
-    } else {
-        setColumns(prev => prev.filter(c => c.id !== id));
-    }
-  };
-
-  const updateColumn = (id: string, updates: Partial<ComparisonColumn>) => {
-    setColumns(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c));
-  };
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    const driverId = event.active.id as number;
-    const columnId = event.over?.id as string;
-    if (columnId && columnId.startsWith('slot-')) {
-      const targetColumnId = columnId.replace('slot-', '');
-      const driver = allDrivers.find(d => d._id === driverId);
-      if (driver) {
-        updateColumn(targetColumnId, { driver });
-        const isLastColumn = columns[columns.length - 1].id === targetColumnId;
-        if (isLastColumn && columns.length < 4) {
-          addColumn();
-        }
-      }
-    }
-  };
-
-  const handleCompare = async () => {
-    const validColumns = columns.filter(c => c.driver && c.sessionKey);
-    if (validColumns.length === 0) return;
-    setIsComparing(true);
-    setComparisonData(null);
-    const payload = validColumns.map(c => ({
-        id: c.id,
-        driverNumber: c.driver!._id,
-        sessionKey: c.sessionKey!
-    }));
-    const data = await f1Api.getComparisonLaps(payload);
-    setComparisonData(data);
-    setIsComparing(false);
-  };
-
-  const calculatedStats = useMemo((): CalculatedStats[] | null => {
-    if (!comparisonData) return null;
-    return comparisonData.map(colData => {
-        const laps = colData.laps.filter(l => l.lap_duration).map(l => l.lap_duration);
-        if (laps.length === 0) {
-            return { columnId: colData.columnId, fastestLap: null, averageLap: null, consistency: null };
-        }
-        const fastestLap = Math.min(...laps);
-        const averageLap = laps.reduce((sum, l) => sum + l, 0) / laps.length;
-        
-        // Calculate standard deviation for consistency
-        const mean = averageLap;
-        const variance = laps.reduce((sum, l) => sum + Math.pow(l - mean, 2), 0) / laps.length;
-        const consistency = Math.sqrt(variance);
-
-        return { columnId: colData.columnId, fastestLap, averageLap, consistency };
-    });
-  }, [comparisonData]);
-
-  const bestOverallFastestLap = useMemo(() => {
-    if (!calculatedStats) return null;
-    return Math.min(...calculatedStats.map(s => s.fastestLap || Infinity).filter(l => l !== Infinity));
-  }, [calculatedStats]);
-
-  const mostConsistent = useMemo(() => {
-    if (!calculatedStats) return null;
-    return Math.min(...calculatedStats.map(s => s.consistency || Infinity).filter(c => c !== Infinity));
-  }, [calculatedStats]);
-
-  const chartOptions: ChartOptions<'line'> = {
-    maintainAspectRatio: false, responsive: true,
-    scales: {
-        y: { ticks: { color: 'white' }, grid: { color: '#ffffff20' } },
-        x: { ticks: { color: 'white' }, grid: { color: '#ffffff20' }, title: { display: true, text: 'Lap Number', color: 'white' } }
-    },
-    plugins: {
-        legend: { labels: { color: 'white' } },
-        tooltip: { callbacks: { label: (context) => `${context.dataset.label || ''}: ${context.parsed.y !== null ? context.parsed.y.toFixed(3) + 's' : 'N/A'}` } }
-    }
-  };
-
-  const chartData = useMemo(() => {
-    if (!comparisonData) return { labels: [], datasets: [] };
-    const allLaps = comparisonData.flatMap(c => c.laps);
-    const maxLaps = Math.max(0, ...allLaps.map(l => l.lap_number));
-    const labels = Array.from({ length: maxLaps }, (_, i) => i + 1);
-    return {
-        labels,
-        datasets: comparisonData.map(colData => {
-            const column = columns.find(c => c.id === colData.columnId);
-            if (!column || !column.driver) return {};
-            const data = labels.map(lapNum => {
-                const lap = colData.laps.find(l => l.lap_number === lapNum);
-                if (!lap) return null;
-                switch(chartType) {
-                    case 'lap_time': return lap.lap_duration;
-                    case 'sector_1': return lap.sector_1_time;
-                    case 'sector_2': return lap.sector_2_time;
-                    case 'sector_3': return lap.sector_3_time;
-                    default: return null;
-                }
-            });
-            return {
-                label: `${column.driver.full_name} (${column.year})`,
-                data: data,
-                borderColor: `#${column.driver.team_colour}`,
-                backgroundColor: `#${column.driver.team_colour}80`,
-                tension: 0.2,
-            };
-        })
-    };
-  }, [comparisonData, columns, chartType]);
-
-  if (initialLoading) return <div className="text-center p-8 text-white">Loading initial data...</div>
-
-  return (
-    <DndContext onDragEnd={handleDragEnd}>
-      <div className="container mx-auto px-4 py-8">
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold text-white mb-2">Tactical Comparison</h1>
-          <p className="text-xl text-gray-300">Build your own comparison of lap and sector times.</p>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
-          <Card className="bg-white/5 backdrop-blur-md border-white/10 lg:col-span-1">
-            <CardHeader><CardTitle className="text-white">Driver Pool</CardTitle></CardHeader>
-            <CardContent className="space-y-2 max-h-[600px] overflow-y-auto">
-              {allDrivers.map(driver => <DraggableDriver key={driver._id} driver={driver} />)}
-            </CardContent>
-          </Card>
-          <div className="lg:col-span-2 space-y-4">
-            {columns.map((col) => 
-                <ComparisonColumn key={col.id} column={col} onUpdate={updateColumn} onRemove={removeColumn} meetings={meetings} />
-            )}
-          </div>
-        </div>
-        
-        <Card className="bg-white/5 backdrop-blur-md border-white/10 mb-8">
-            <CardHeader><CardTitle className="text-white">Analyze</CardTitle></CardHeader>
-            <CardContent className="flex justify-end">
-                <Button onClick={handleCompare} disabled={isComparing || columns.filter(c => c.driver && c.sessionKey).length < 1} size="lg" className="bg-red-600 hover:bg-red-700 text-white font-bold">
-                {isComparing ? <><Lucide.Loader2 className="mr-2 h-4 w-4 animate-spin" /> Analyzing...</> : 'Run Comparison'}
-                </Button>
-            </CardContent>
-        </Card>
-
-        {comparisonData && calculatedStats && (
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-8 mt-8">
-                <Card className="lg:col-span-4 bg-white/5 backdrop-blur-md border-white/10">
-                    <CardHeader>
-                        <div className="flex justify-between items-center">
-                            <CardTitle className="text-white">Lap & Sector Analysis</CardTitle>
-                            <Select value={chartType} onValueChange={(v) => setChartType(v as any)}>
-                                <SelectTrigger className="w-[180px]"><SelectValue /></SelectTrigger>
-                                <SelectContent>
-                                    <SelectItem value="lap_time">Lap Times</SelectItem>
-                                    <SelectItem value="sector_1">Sector 1</SelectItem>
-                                    <SelectItem value="sector_2">Sector 2</SelectItem>
-                                    <SelectItem value="sector_3">Sector 3</SelectItem>
-                                </SelectContent>
-                            </Select>
-                        </div>
-                    </CardHeader>
-                    <CardContent className="h-96"><Line data={chartData} options={chartOptions} /></CardContent>
-                </Card>
-
-                <StatCard title="Fastest Lap" icon={Lucide.Zap}>
-                    {calculatedStats.map(stat => {
-                        const column = columns.find(c => c.id === stat.columnId);
-                        const isBest = stat.fastestLap === bestOverallFastestLap;
-                        return (
-                            <div key={stat.columnId}>
-                                <p className="text-sm text-white/70">{column?.driver?.full_name}</p>
-                                <p className={`text-2xl font-bold font-mono ${isBest ? 'text-purple-400' : 'text-white'}`}>{formatLapTime(stat.fastestLap)}</p>
-                            </div>
-                        );
-                    })}
-                </StatCard>
-                <StatCard title="Average Lap" icon={Lucide.Timer}>
-                     {calculatedStats.map(stat => {
-                        const column = columns.find(c => c.id === stat.columnId);
-                        return (
-                            <div key={stat.columnId}>
-                                <p className="text-sm text-white/70">{column?.driver?.full_name}</p>
-                                <p className="text-2xl font-bold font-mono text-white">{formatLapTime(stat.averageLap)}</p>
-                            </div>
-                        );
-                    })}
-                </StatCard>
-                 <StatCard title="Lap Time Consistency" icon={Lucide.Gauge}>
-                     {calculatedStats.map(stat => {
-                        const column = columns.find(c => c.id === stat.columnId);
-                        const isBest = stat.consistency === mostConsistent;
-                        return (
-                            <div key={stat.columnId}>
-                                <p className="text-sm text-white/70">{column?.driver?.full_name}</p>
-                                <p className={`text-2xl font-bold font-mono ${isBest ? 'text-green-400' : 'text-white'}`}>
-                                    {stat.consistency?.toFixed(3)}
-                                    <span className="text-sm">s</span>
-                                </p>
-                            </div>
-                        );
-                    })}
-                </StatCard>
-            </div>
-        )}
-      </div>
-    </DndContext>
-  )
-}
-
-// --- Sub-components ---
-function ComparisonColumn({ column, onUpdate, onRemove, meetings }: { column: ComparisonColumn, onUpdate: (id: string, updates: Partial<ComparisonColumn>) => void, onRemove: (id: string) => void, meetings: Meeting[] }) {
-    const { isOver, setNodeRef } = useDroppable({ id: `slot-${column.id}` });
-    const [sessions, setSessions] = useState<Session[]>([]);
-    const availableYears = useMemo(() => Array.from(new Set(meetings.map(m => m.year))).sort((a, b) => b - a), [meetings]);
-    const meetingsForYear = useMemo(() => meetings.filter(m => m.year === column.year), [meetings, column.year]);
+const DriverStatsPopup = ({ driver, open, onOpenChange }: { driver: Driver | null, open: boolean, onOpenChange: (open: boolean) => void }) => {
+    const [stats, setStats] = useState<DriverStats | null>(null);
+    const [loading, setLoading] = useState(false);
 
     useEffect(() => {
-        if (column.meetingKey) {
-            const fetchSessions = async () => {
-                const sessionData = await f1Api.getSessions(column.meetingKey!);
-                setSessions(sessionData || []);
+        if (driver && open) {
+            const fetchStats = async () => {
+                setLoading(true);
+                const fetchedStats = await f1Api.getDriverStats(driver._id);
+                setStats(fetchedStats);
+                setLoading(false);
             };
-            fetchSessions();
-        } else {
-            setSessions([]);
+            fetchStats();
         }
-    }, [column.meetingKey]);
+    }, [driver, open]);
 
-    const handleUpdate = (field: keyof ComparisonColumn, value: any) => {
-        const updates: Partial<ComparisonColumn> = { [field]: value };
-        if (field === 'driver') { updates.year = null; updates.meetingKey = null; updates.sessionKey = null; }
-        if (field === 'year') { updates.meetingKey = null; updates.sessionKey = null; }
-        if (field === 'meetingKey') { updates.sessionKey = null; }
-        onUpdate(column.id, updates);
+    if (!driver) return null;
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="bg-gray-900/80 backdrop-blur-lg border-white/20 text-white">
+                <DialogHeader>
+                    <div className="flex items-center gap-4">
+                        <Avatar className="w-16 h-16 border-2" style={{borderColor: `#${driver.team_colour}`}}>
+                            <AvatarImage src={driver.headshot_url} alt={driver.full_name} />
+                            {/* FIX: Safely access first/last name for initials */}
+                            <AvatarFallback>{driver.first_name?.[0] || ''}{driver.last_name?.[0] || ''}</AvatarFallback>
+                        </Avatar>
+                        <div>
+                            <DialogTitle className="text-3xl font-bold">{driver.full_name}</DialogTitle>
+                            <DialogDescription className="text-white/70">{driver.team_name}</DialogDescription>
+                        </div>
+                    </div>
+                </DialogHeader>
+                <div className="py-4">
+                    <h3 className="text-lg font-semibold mb-4">Career Statistics</h3>
+                    {loading ? (
+                         <div className="flex items-center justify-center h-24">
+                            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-500"></div>
+                         </div>
+                    ) : (
+                        <div className="grid grid-cols-2 gap-4">
+                            <Card className="bg-white/5 p-4">
+                                <CardHeader className="p-0 pb-2">
+                                    <CardTitle className="text-sm font-medium text-white/80">Grand Prix Wins</CardTitle>
+                                </CardHeader>
+                                <CardContent className="p-0">
+                                    <p className="text-4xl font-bold">{stats?.grand_prix_victories ?? 0}</p>
+                                </CardContent>
+                            </Card>
+                             <Card className="bg-white/5 p-4">
+                                <CardHeader className="p-0 pb-2">
+                                    <CardTitle className="text-sm font-medium text-white/80">Championships</CardTitle>
+                                </CardHeader>
+                                <CardContent className="p-0">
+                                     <p className="text-4xl font-bold">{stats?.championships_won ?? 0}</p>
+                                     <p className="text-xs text-white/60">(Placeholder)</p>
+                                </CardContent>
+                            </Card>
+                        </div>
+                    )}
+                </div>
+            </DialogContent>
+        </Dialog>
+    );
+};
+
+
+// --- Main Page Component ---
+export default function DriversPage() {
+  // Local state for this page only
+  const [allDrivers, setAllDrivers] = useState<Driver[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedTeam, setSelectedTeam] = useState<string>("all");
+  
+  // State for the popup
+  const [selectedDriver, setSelectedDriver] = useState<Driver | null>(null);
+  const [isPopupOpen, setIsPopupOpen] = useState(false);
+
+  // Fetch all drivers when the component mounts
+  useEffect(() => {
+    const fetchAllDrivers = async () => {
+      setLoading(true);
+      const driversData = await f1Api.getAllDrivers();
+      setAllDrivers(driversData || []);
+      setLoading(false);
     };
+    fetchAllDrivers();
+  }, []);
 
+  const filteredDrivers = useMemo(() => {
+    let filtered = allDrivers;
+    if (searchTerm) {
+      filtered = filtered.filter(driver =>
+        driver.full_name.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    }
+    if (selectedTeam !== "all") {
+      filtered = filtered.filter(driver => driver.team_name === selectedTeam);
+    }
+    return filtered.sort((a, b) => a.full_name.localeCompare(b.full_name));
+  }, [allDrivers, searchTerm, selectedTeam]);
+
+  const availableTeams = useMemo(() => 
+    Array.from(new Set(allDrivers.map(d => d.team_name))).sort()
+  , [allDrivers]);
+
+  const handleDriverClick = (driver: Driver) => {
+      setSelectedDriver(driver);
+      setIsPopupOpen(true);
+  };
+
+  if (loading) {
     return (
-        <Card ref={setNodeRef} className={`relative p-4 rounded-lg border-2 bg-white/5 backdrop-blur-md ${isOver ? 'border-blue-400 bg-blue-500/20' : 'border-white/20'} transition-colors`}>
-            <Button onClick={() => onRemove(column.id)} variant="ghost" size="sm" className="absolute top-2 right-2 w-6 h-6 p-0 z-10 text-white/50 hover:text-white">&times;</Button>
-            {!column.driver ? (
-                <div className="text-center text-white/50 h-24 flex flex-col justify-center items-center">
-                    <Lucide.Plus className="mx-auto w-8 h-8 mb-2" />
-                    <p>Drag a driver here</p>
-                </div>
-            ) : (
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                    <div className="flex flex-col items-center justify-center">
-                        <Avatar className="w-16 h-16 mb-2"><AvatarImage src={column.driver.headshot_url} /><AvatarFallback style={{backgroundColor: `#${column.driver.team_colour}`}}>{column.driver.full_name.split(' ').map(n=>n[0])}</AvatarFallback></Avatar>
-                        <p className="text-md font-bold text-white text-center">{column.driver.full_name}</p>
-                    </div>
-                    <div className="w-full">
-                        <label className="text-xs text-white/70">Year</label>
-                        <Select value={column.year?.toString()} onValueChange={v => handleUpdate('year', Number(v))}>
-                            <SelectTrigger><SelectValue placeholder="Year" /></SelectTrigger>
-                            <SelectContent>{availableYears.map(y => <SelectItem key={y} value={y.toString()}>{y}</SelectItem>)}</SelectContent>
-                        </Select>
-                    </div>
-                     <div className="w-full">
-                        <label className="text-xs text-white/70">Meeting</label>
-                        <Select disabled={!column.year} value={column.meetingKey?.toString()} onValueChange={v => handleUpdate('meetingKey', Number(v))}>
-                            <SelectTrigger><SelectValue placeholder="Meeting" /></SelectTrigger>
-                            <SelectContent>{meetingsForYear.map(m => <SelectItem key={m._id} value={m._id.toString()}>{m.meeting_name}</SelectItem>)}</SelectContent>
-                        </Select>
-                    </div>
-                     <div className="w-full">
-                        <label className="text-xs text-white/70">Session</label>
-                        <Select disabled={!column.meetingKey} value={column.sessionKey?.toString()} onValueChange={v => handleUpdate('sessionKey', Number(v))}>
-                            <SelectTrigger><SelectValue placeholder="Session" /></SelectTrigger>
-                            <SelectContent>{sessions.map(s => <SelectItem key={s._id} value={s._id.toString()}>{s.session_name}</SelectItem>)}</SelectContent>
-                        </Select>
-                    </div>
-                </div>
-            )}
-        </Card>
+      <div className="container mx-auto px-4 py-8">
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600 mx-auto mb-4"></div>
+            <p className="text-white">Loading Driver Directory...</p>
+          </div>
+        </div>
+      </div>
     );
-}
+  }
 
-function StatCard({ title, icon: Icon, children }: { title: string, icon: React.ElementType, children: React.ReactNode }) {
-    return (
+  return (
+    <div className="container mx-auto px-4 py-8">
+      <DriverStatsPopup driver={selectedDriver} open={isPopupOpen} onOpenChange={setIsPopupOpen} />
+      <header className="mb-8">
+        <h1 className="text-4xl font-bold text-white">F1 Driver Directory</h1>
+        <p className="text-lg text-gray-400">Explore all Formula 1 drivers.</p>
+      </header>
+
+      <Card className="bg-white/5 backdrop-blur-md border-white/10 mb-8">
+        <CardContent className="p-6 flex flex-col md:flex-row gap-4">
+          <div className="relative flex-grow">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
+            <Input
+              placeholder="Search by driver name..."
+              className="pl-10 bg-gray-900/50 border-white/20"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+          <Select value={selectedTeam} onValueChange={setSelectedTeam}>
+            <SelectTrigger className="w-full md:w-[240px] bg-gray-900/50 border-white/20">
+              <SelectValue placeholder="Filter by Team" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Teams</SelectItem>
+              {availableTeams.map((team) => (
+                <SelectItem key={team} value={team}>{team}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+        {filteredDrivers.map((driver) => (
+          <button key={driver._id} onClick={() => handleDriverClick(driver)} className="w-full text-left">
+            <Card className="bg-white/5 backdrop-blur-md border-white/10 h-full hover:border-red-500/50 transition-all group">
+              <CardHeader className="text-center p-4">
+                <div className="relative w-24 h-24 mx-auto">
+                    <Avatar className="w-24 h-24">
+                        <AvatarImage src={driver.headshot_url} alt={driver.full_name} />
+                        {/* FIX: Safely access first/last name for initials */}
+                        <AvatarFallback className="text-white font-bold text-2xl" style={{ backgroundColor: `#${driver.team_colour}` }}>
+                            {driver.first_name?.[0] || ''}{driver.last_name?.[0] || ''}
+                        </AvatarFallback>
+                    </Avatar>
+                    <div className="absolute -bottom-1 -right-1 bg-gray-900 rounded-full p-1">
+                        <CountryFlag countryCode={driver.country_code} />
+                    </div>
+                </div>
+              </CardHeader>
+              <CardContent className="text-center p-4 pt-0">
+                <p className="font-bold text-white truncate group-hover:text-red-400 transition-colors">{driver.full_name}</p>
+                <p className="text-sm text-white/60 truncate">{driver.team_name}</p>
+                <div className="w-1/2 h-1 rounded-full mt-2 mx-auto" style={{ backgroundColor: `#${driver.team_colour}` }}></div>
+              </CardContent>
+            </Card>
+          </button>
+        ))}
+      </div>
+
+      {filteredDrivers.length === 0 && !loading && (
         <Card className="bg-white/5 backdrop-blur-md border-white/10">
-            <CardHeader>
-                <CardTitle className="text-white flex items-center gap-2"><Icon className="w-5 h-5" /> {title}</CardTitle>
-            </CardHeader>
-            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4 text-center">
-                {children}
-            </CardContent>
+          <CardContent className="text-center py-12">
+            <Users className="w-16 h-16 text-white/40 mx-auto mb-4" />
+            <h3 className="text-xl font-semibold text-white mb-2">No Drivers Found</h3>
+            <p className="text-white/60">Try adjusting your search criteria.</p>
+          </CardContent>
         </Card>
-    );
+      )}
+    </div>
+  );
 }
