@@ -1,14 +1,14 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card"
+import { Badge } from "../../components/ui/badge"
+import { Input } from "../../components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select"
+import { Avatar, AvatarFallback, AvatarImage } from "../../components/ui/avatar"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../../components/ui/dialog"
 import { Users, Trophy, Search, X } from "lucide-react"
 import { useState, useEffect, useMemo } from "react"
-import { f1Api, type Driver, type DriverStats } from "@/lib/api"
+import { f1Api, type Driver, type DriverStats } from "../../lib/api"
 
 // --- Helper Components ---
 const CountryFlag = ({ countryCode }: { countryCode: string }) => {
