@@ -1,12 +1,12 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card"
-import { Badge } from "../../../components/ui/badge"
-import { Button } from "../../../components/ui/button"
-import { Avatar, AvatarFallback, AvatarImage } from "../../../components/ui/avatar"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Calendar, MapPin, Clock, Flag, Users, Timer, ArrowLeft, TestTube, Trophy } from "lucide-react"
 import { useEffect, useState } from "react"
-import { f1Api, type Meeting, type Session, type Position } from "../../../lib/api"
+import { f1Api, type Meeting, type Session, type Position } from "@/lib/api"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
 
