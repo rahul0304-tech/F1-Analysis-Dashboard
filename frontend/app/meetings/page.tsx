@@ -1,13 +1,13 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card"
+import { Badge } from "../../components/ui/badge"
+import { Input } from "../../components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select"
 import { Calendar, MapPin, Search, Filter, TestTube, Flag } from "lucide-react"
 import { useEffect, useState, useMemo } from "react"
-import { useF1Data } from "@/hooks/use-f1-data" // Using the updated hook
-import { type Meeting } from "@/lib/api"
+import { useF1Data } from "../../hooks/use-f1-data" // Using the updated hook
+import { type Meeting } from "../../lib/api"
 import Link from "next/link"
 
 // --- Helper function to get a reliable, unique string ID from a meeting object ---
