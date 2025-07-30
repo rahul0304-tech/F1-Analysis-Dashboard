@@ -24,6 +24,8 @@ This dashboard is composed of several key pages, each offering a unique analytic
 
 The project is built with a modern, decoupled architecture.
 
+## [F1-Analysis-Dashboard](https://f1-analysis-dashboard.vercel.app/)
+
 ### **Frontend**
 
 * **Framework:** [Next.js](https://nextjs.org/) (React)
@@ -108,7 +110,7 @@ To run this project locally, follow these steps:
     ```bash
     npm run dev
     ```
-4.  Open your localhost in your browser.
+4.  Open in your browser.
 
 ---
 
@@ -116,5 +118,5 @@ To run this project locally, follow these steps:
 
 This application is designed for a decoupled deployment:
 
-* **Frontend:** The Next.js application can be deployed as a static site on platforms like Vercel or Netlify for optimal performance.
+* **Frontend:** The Next.js application should be deployed as a dynamic, server-side application on a platform like Vercel for optimal performance and scalability.
 * **Backend:** The Flask API should be deployed as a web service on a platform like Render or Heroku.
