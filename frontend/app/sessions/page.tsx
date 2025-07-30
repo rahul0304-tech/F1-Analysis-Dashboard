@@ -1,12 +1,12 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card"
-import { Badge } from "../../components/ui/badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Flag, Calendar, Clock, Timer } from "lucide-react"
 import { useState, useMemo } from "react"
 import Link from "next/link"
-import { useF1Data } from "../../hooks/use-f1-data" // Import the hook
+import { useF1Data } from "@/hooks/use-f1-data" // Import the hook
 
 export default function SessionsPage() {
   const { meetings, selectedMeeting, setSelectedMeeting, sessions, loading } = useF1Data()
