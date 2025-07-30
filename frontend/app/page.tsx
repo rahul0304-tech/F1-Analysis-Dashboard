@@ -1,6 +1,6 @@
 "use client"
 
-import { CardContent } from "@/components/ui/card"
+import { CardContent } from "../components/ui/card"
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { BarChart3, Calendar, Users, Timer, Trophy, Flag, Target } from "lucide-react"
