@@ -1,8 +1,0 @@
-/api/status - GET: Returns the API status.
-/api/meetings - GET: Returns a list of all meetings.
-/api/sessions - GET: Returns a list of all sessions.
-/api/laps - GET: Returns a list of all laps.
-/api/drivers - GET: Returns a list of all drivers, optionally filtered by session_key.
-/api/drivers/<int:driver_number> - GET: Returns details for a specific driver by driver_number.
-/api/laps/driver - GET: Returns lap data for a specific driver.
-/api/sessions/fastest_laps - GET: Returns fastest laps for all sessions.
